@@ -12,6 +12,13 @@ proxy-lite
 
 > `PL` 是大写命令，Linux 命令大小写敏感。生产运维命令请在 root 用户下执行。Proxy Lite 不占用 `p-m`，可与完整项目 `proxy-manager` 共存。
 
+## 发布信息
+
+- GitHub：`https://github.com/jiasongji/proxy-lite`
+- Latest Release：`v0.1.0`
+- Release assets：`proxy-lite.sh`、`proxy-lite.sh.sha256`
+- `v0.1.0` 脚本 SHA-256：`b0d299797188b03ca6dfac5323fe7cee865f08e072db9ac1477aee4880707169`
+
 ## 功能范围
 
 保留：

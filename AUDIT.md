@@ -6,6 +6,8 @@
 
 > 公开仓库不得包含真实服务器 IP、真实域名、登录端口、节点密码、B 上游凭据、订阅链接、token、证书/key 文件或本地凭据文件。
 
+发布状态：独立 GitHub 仓库 `https://github.com/jiasongji/proxy-lite` 已创建，`v0.1.0` Release 已发布，assets 为 `proxy-lite.sh` 与 `proxy-lite.sh.sha256`；脚本 SHA-256 为 `b0d299797188b03ca6dfac5323fe7cee865f08e072db9ac1477aee4880707169`。
+
 ## 1. 功能范围
 
 - [x] 新建轻量项目副本：`proxy-lite/`。
