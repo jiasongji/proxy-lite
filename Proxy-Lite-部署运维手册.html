@@ -14,9 +14,9 @@
 <body>
 <div class="wrap">
   <header class="hero">
-    <span class="badge ok">Proxy Lite</span><span class="badge">sing-box</span><span class="badge">A/B relay</span><span class="badge">single instance</span>
+    <span class="badge ok">Proxy Lite v0.1.1</span><span class="badge">sing-box</span><span class="badge">A/B relay</span><span class="badge">protocol egress</span>
     <h1>Proxy Lite 部署运维手册</h1>
-    <p>轻量 A/B 中转落地脚本：服务器 A 提供 AnyTLS / NaiveProxy / 可选 Shadowsocks 用户入口，固定经服务器 B 的 Shadowsocks 出口；使用 <code>PL</code> 或 <code>proxy-lite</code> 管理。</p>
+    <p>轻量 A/B 中转落地脚本：服务器 A 只提供 AnyTLS / NaiveProxy 用户入口；服务器 B 只提供 Shadowsocks landing。AnyTLS 与 NaiveProxy 可分别选择 <code>direct</code> 或 <code>egress-b</code> 出口。</p>
   </header>
 
   <main class="grid">
@@ -34,65 +34,78 @@
     <section class="content">
       <section id="overview" class="card">
         <h2>1. 概览</h2>
-        <p>Proxy Lite 是完整 <code>proxy-manager</code> 的轻量化副本，去掉多用户、流量限制和分流功能，只保留 A/B 中转落地闭环。</p>
+        <p>Proxy Lite 是完整 <code>proxy-manager</code> 的独立轻量项目，去掉多用户、流量限制和域名/IP 分流功能，只保留 A/B 中转落地与协议级出站选择。</p>
         <table>
           <tr><th>项目</th><th>值</th></tr>
           <tr><td>短命令</td><td><code>PL</code>（大写）</td></tr>
-          <tr><td>长命令</td><td><code>proxy-lite</code></td></tr>
-          <tr><td>默认目录</td><td><code>/www/wwwroot/&lt;domain&gt;/Proxy-Lite/</code></td></tr>
+          <tr><td>完整命令</td><td><code>proxy-lite</code></td></tr>
+          <tr><td>GitHub</td><td><code>https://github.com/jiasongji/proxy-lite</code></td></tr>
+          <tr><td>Latest Release</td><td><code>v0.1.1</code></td></tr>
           <tr><td>默认镜像</td><td><code>ghcr.io/sagernet/sing-box:latest</code></td></tr>
         </table>
-        <div class="note">已裁剪：<code>user</code>、<code>route</code>、<code>stats</code>、<code>traffic</code>、<code>quota</code>。如果需要多用户、AI rule-set 分流或限额，请使用完整项目 <code>proxy-manager</code>。</div>
+        <p>保留 AnyTLS、NaiveProxy、A-B 内部 Shadowsocks、Docker host network、真实 <code>sing-box check -c</code>、安全升级和失败回退。</p>
+        <p>裁剪 user / route / stats / traffic / quota；不创建 <code>config/users.json</code>；不生成 <code>route.rule_set</code>。</p>
       </section>
 
       <section id="requirements" class="card">
         <h2>2. 环境要求</h2>
         <ul>
-          <li>Linux 服务器，生产运维命令请在 root 用户下执行。</li>
-          <li>Docker daemon 可用。</li>
-          <li>Docker Compose 可用；缺失时脚本会尝试安装独立二进制。</li>
-          <li><code>jq</code> 可用。</li>
-          <li>服务器 A 启用 AnyTLS 或 NaiveProxy 时，需要域名和 TLS 证书/key 文件。</li>
+          <li>root 用户执行生产运维命令。</li>
+          <li>已安装 Docker 与 Docker Compose。</li>
+          <li>服务器 A 如启用 AnyTLS / NaiveProxy，需要可用 TLS 证书与私钥路径。</li>
+          <li>服务器 B 的 Shadowsocks 端口建议仅允许服务器 A 的公网 IP 访问。</li>
         </ul>
       </section>
 
       <section id="install" class="card">
         <h2>3. 安装</h2>
-        <h3>3.1 从 GitHub Release 安装</h3>
-        <button class="copy" data-copy>复制</button>
-        <pre>curl -fsSL https://github.com/jiasongji/proxy-lite/releases/latest/download/proxy-lite.sh -o /tmp/proxy-lite.sh
-bash /tmp/proxy-lite.sh install</pre>
-        <h3>3.2 本仓库内本地验证</h3>
-        <button class="copy" data-copy>复制</button>
-        <pre>bash proxy-lite.sh help</pre>
-      </section>
+        <h3>快速安装</h3>
+        <pre><button class="copy">复制</button><code>curl -fsSL https://github.com/jiasongji/proxy-lite/releases/latest/download/proxy-lite.sh -o /tmp/proxy-lite.sh
+bash /tmp/proxy-lite.sh install</code></pre>
 
-      <section id="topology" class="card">
-        <h2>4. A/B 拓扑</h2>
-        <pre>用户客户端
-  │ AnyTLS / NaiveProxy
-  ▼
-服务器 A（entry_a）
-  └─ 固定 route.final = egress-b → Shadowsocks outbound → 服务器 B
-
-服务器 B（egress_b）
-  └─ Shadowsocks inbound → direct 出站</pre>
-        <h3>服务器 B</h3>
-        <button class="copy" data-copy>复制</button>
-        <pre>PL install --yes \
+        <h3>服务器 B：Shadowsocks landing</h3>
+        <pre><button class="copy">复制</button><code>PL install --yes \
   --node-role egress_b \
   --domain b.example.com \
   --server-ip 198.51.100.20 \
   --b-ss-port 30003 \
   --b-ss-method aes-128-gcm \
-  --b-ss-password '&lt;B_SS_PASSWORD&gt;'</pre>
-        <h3>服务器 A</h3>
-        <button class="copy" data-copy>复制</button>
-        <pre>PL install --yes \
+  --b-ss-password '&lt;B_SS_PASSWORD&gt;'</code></pre>
+
+        <h3>服务器 A：只部署 AnyTLS direct</h3>
+        <pre><button class="copy">复制</button><code>PL install --yes \
+  --node-role entry_a \
+  --domain a.example.com \
+  --server-ip 203.0.113.10 \
+  --components anytls \
+  --anytls-egress direct \
+  --cert-file /path/fullchain.pem \
+  --key-file /path/privkey.pem \
+  --anytls-port 30001</code></pre>
+
+        <h3>服务器 A：只部署 NaiveProxy 经 B</h3>
+        <pre><button class="copy">复制</button><code>PL install --yes \
+  --node-role entry_a \
+  --domain a.example.com \
+  --server-ip 203.0.113.10 \
+  --components naive \
+  --naive-egress egress-b \
+  --cert-file /path/fullchain.pem \
+  --key-file /path/privkey.pem \
+  --naive-port 30002 \
+  --b-ss-host 198.51.100.20 \
+  --b-ss-port 30003 \
+  --b-ss-method aes-128-gcm \
+  --b-ss-password '&lt;B_SS_PASSWORD&gt;'</code></pre>
+
+        <h3>服务器 A：AnyTLS direct + NaiveProxy 经 B</h3>
+        <pre><button class="copy">复制</button><code>PL install --yes \
   --node-role entry_a \
   --domain a.example.com \
   --server-ip 203.0.113.10 \
   --components anytls,naive \
+  --anytls-egress direct \
+  --naive-egress egress-b \
   --cert-file /path/fullchain.pem \
   --key-file /path/privkey.pem \
   --anytls-port 30001 \
@@ -100,87 +113,98 @@ bash /tmp/proxy-lite.sh install</pre>
   --b-ss-host 198.51.100.20 \
   --b-ss-port 30003 \
   --b-ss-method aes-128-gcm \
-  --b-ss-password '&lt;B_SS_PASSWORD&gt;'</pre>
-        <div class="note">B 的 Shadowsocks 凭据只作为 A 的上游配置，不进入用户客户端导出。B 端口建议只允许服务器 A 的公网 IP 访问。</div>
+  --b-ss-password '&lt;B_SS_PASSWORD&gt;'</code></pre>
+      </section>
+
+      <section id="topology" class="card">
+        <h2>4. A/B 拓扑</h2>
+        <p><code>entry_a</code> 上的用户入口只可能是 <code>anytls-in</code> 与 <code>naive-in</code>。Shadowsocks 只出现在 A 的 <code>egress-b</code> outbound 与 B 的 <code>ss-landing-in</code> inbound。</p>
+        <table>
+          <tr><th>组合</th><th>参数</th><th>效果</th></tr>
+          <tr><td>AnyTLS direct</td><td><code>--components anytls --anytls-egress direct</code></td><td>用户连 A，出口为 A。</td></tr>
+          <tr><td>NaiveProxy 经 B</td><td><code>--components naive --naive-egress egress-b</code></td><td>用户连 A，出口为 B。</td></tr>
+          <tr><td>混合</td><td><code>--anytls-egress direct --naive-egress egress-b</code></td><td>AnyTLS 从 A 出口，NaiveProxy 从 B 出口。</td></tr>
+          <tr><td>全部经 B</td><td><code>--anytls-egress egress-b --naive-egress egress-b</code></td><td>两种入口都经 B。</td></tr>
+          <tr><td>全部 direct</td><td><code>--anytls-egress direct --naive-egress direct</code></td><td>两种入口都从 A 出口，不要求 B 参数。</td></tr>
+        </table>
+        <pre><code>{
+  "route": {
+    "rules": [
+      { "inbound": ["anytls-in"], "action": "route", "outbound": "direct" },
+      { "inbound": ["naive-in"], "action": "route", "outbound": "egress-b" }
+    ],
+    "final": "direct"
+  }
+}</code></pre>
+        <div class="note">只有至少一个协议选择 <code>egress-b</code> 时，服务器 A 才需要 <code>--b-ss-host</code>、<code>--b-ss-port</code>、<code>--b-ss-method</code>、<code>--b-ss-password</code>。</div>
       </section>
 
       <section id="commands" class="card">
         <h2>5. 命令</h2>
-        <button class="copy" data-copy>复制</button>
-        <pre>PL install
+        <pre><code>PL install
 PL update
 PL upgrade --image ghcr.io/sagernet/sing-box:latest
-PL pull-image
 PL backup list
 PL rollback latest
-PL env-check
 PL start
 PL stop
 PL restart
 PL status
 PL logs
 PL info
+PL check
 PL doctor
 PL topology
-PL check
-PL uninstall</pre>
+PL change-port anytls 30001
+PL change-port naive 30002
+PL change-port b-ss 30003
+PL change-secret anytls
+PL change-secret naive
+PL change-secret b-ss
+PL regen
+PL uninstall</code></pre>
+        <p><code>b-ss</code> 表示 A-B 内部链路或 B landing。修改 <code>b-ss</code> 密码后，需要同步另一端配置。</p>
       </section>
 
       <section id="upgrade" class="card">
         <h2>6. 升级回退</h2>
-        <button class="copy" data-copy>复制</button>
-        <pre>PL update
+        <pre><button class="copy">复制</button><code>PL update
 PL backup list
 PL upgrade --image ghcr.io/sagernet/sing-box:latest
 PL check
-PL status</pre>
-        <p><code>PL upgrade</code> 会备份当前配置、拉取候选镜像、重新渲染配置并执行真实 <code>sing-box check -c</code>；失败会恢复更新前快照。</p>
-        <button class="copy" data-copy>复制</button>
-        <pre>PL backup list
+PL status</code></pre>
+        <p><code>PL upgrade</code> 会先备份当前配置，拉取候选镜像，重新渲染配置，并使用候选镜像执行真实 <code>sing-box check -c</code>。校验通过才会应用；候选镜像拉取、配置渲染或配置检查失败时，会恢复更新前快照。</p>
+        <pre><code>PL backup list
 PL rollback latest
-PL rollback 20260615-120000</pre>
+PL rollback 20260615-120000</code></pre>
       </section>
 
       <section id="audit" class="card">
         <h2>7. 审计</h2>
-        <button class="copy" data-copy>复制</button>
-        <pre>bash -n proxy-lite.sh
-shellcheck proxy-lite.sh
-bash proxy-lite.sh help
-bash proxy-lite.sh backup help
-bash proxy-lite.sh rollback help
-bash proxy-lite.sh upgrade help</pre>
         <ul>
-          <li><code>entry_a</code> 生成 <code>egress-b</code> outbound，<code>route.final</code> 为 <code>egress-b</code>。</li>
-          <li><code>egress_b</code> 生成 <code>ss-landing-in</code>，<code>route.final</code> 为 <code>direct</code>。</li>
-          <li>不生成 <code>users.json</code>，不生成 <code>route.rule_set</code>。</li>
-          <li>客户端导出不包含 B 上游 Shadowsocks 密码。</li>
+          <li><code>bash -n proxy-lite.sh</code> 与 ShellCheck。</li>
+          <li>CLI help / menu smoke。</li>
+          <li>生成配置矩阵：AnyTLS only、NaiveProxy only、混合出站、全部 direct、全部经 B、B landing。</li>
+          <li>对抗测试：拒绝 A 侧 <code>--components ss</code>，旧 <code>ENABLE_SS=1</code> 不会生成用户 SS 入站，经 B 缺少 B 参数时失败。</li>
+          <li>Docker <code>sing-box check -c</code> 真实检查。</li>
+          <li>升级/回退 smoke：有效镜像通过，无效镜像失败并恢复快照。</li>
         </ul>
       </section>
 
       <section id="security" class="card">
         <h2>8. 安全</h2>
         <ul>
-          <li><code>config/lite.env</code> 包含服务凭据和 B 上游凭据，应保持 <code>600</code> 权限。</li>
-          <li>客户端导出文件包含 A 侧用户入口凭据，不要公开粘贴。</li>
-          <li>公开文档不得写入真实服务器 IP、域名、端口、密码、token、私钥或证书/key 路径。</li>
-          <li>卸载默认不删除 Docker、Docker Compose 和 TLS 证书文件。</li>
+          <li><code>B_SS_PASSWORD</code> 是 A-B 内部链路密码，不提供给终端用户。</li>
+          <li>客户端目录只导出 AnyTLS / NaiveProxy 配置和 full test client。</li>
+          <li>公开文档仅使用占位 IP、域名、端口和密码。</li>
+          <li>B landing 端口建议在云安全组、防火墙或面板中限制为仅允许 A 的公网 IP。</li>
         </ul>
       </section>
     </section>
   </main>
 </div>
 <script>
-document.querySelectorAll('[data-copy]').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const pre = btn.nextElementSibling;
-    if (!pre) return;
-    await navigator.clipboard.writeText(pre.textContent);
-    const old = btn.textContent;
-    btn.textContent = '已复制';
-    setTimeout(() => btn.textContent = old, 1200);
-  });
-});
+document.querySelectorAll('.copy').forEach(btn=>{btn.addEventListener('click',async()=>{const code=btn.parentElement.querySelector('code')?.innerText||'';try{await navigator.clipboard.writeText(code);btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1200)}catch(e){btn.textContent='复制失败'}})})
 </script>
 </body>
 </html>

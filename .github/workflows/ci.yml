@@ -30,11 +30,14 @@ jobs:
           ! grep -RIn "${placeholder}GITHUB_ORG\|${placeholder}" README.md Proxy-Lite-部署运维手册.html AUDIT.md
           ! grep -RInE 'BEGIN [A-Z ]*KEY|gho_[A-Za-z0-9_]+|ghp_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16}' README.md Proxy-Lite-部署运维手册.html AUDIT.md
           ! grep -RInE 'scp|ssh -i|chmod 600|登录测试服务器|上传脚本' README.md Proxy-Lite-部署运维手册.html
-          ! grep -RInE 'B_SS_PASSWORD=[^<]|b-secret|legacy-any|legacy-naive|DR-LA_.*id_ed25519' README.md Proxy-Lite-部署运维手册.html AUDIT.md
+          ! grep -RInE 'B_SS_PASSWORD=[^<]|b-upstream-secret|legacy-any|legacy-naive|DR-LA_.*id_ed25519' README.md Proxy-Lite-部署运维手册.html AUDIT.md
+          ! grep -RInE '可选 Shadowsocks 用户入口|固定经 B 出口|固定经服务器 B|route\.final.?固定.?egress-b|shadowsocks-outbound\.json' README.md Proxy-Lite-部署运维手册.html AUDIT.md
 
       - name: CLI help smoke tests
         run: |
           bash proxy-lite.sh help >/tmp/pl-help.out
+          grep -q -- '--anytls-egress direct|egress-b' /tmp/pl-help.out
+          grep -q '不提供 Shadowsocks 用户入口' /tmp/pl-help.out
           bash proxy-lite.sh backup help >/tmp/pl-backup-help.out
           bash proxy-lite.sh rollback help >/tmp/pl-rollback-help.out
           bash proxy-lite.sh upgrade help >/tmp/pl-upgrade-help.out
@@ -50,60 +53,185 @@ jobs:
           printf '0\n' | PL_TEST_ALLOW_NON_ROOT=1 bash proxy-lite.sh menu
           printf 'x\n' | PL_TEST_ALLOW_NON_ROOT=1 bash proxy-lite.sh menu
 
-      - name: Generated config smoke tests
+      - name: Generated config and adversarial smoke tests
         run: |
-          tmp="$(mktemp -d)"
-          mkdir -p "$tmp/config"
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=example.com" -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
-          cat > "$tmp/config/lite.env" <<EOF
+          set -euo pipefail
+          SCRIPT="$PWD/proxy-lite.sh"
+          make_cert() {
+            local dir="$1"
+            openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=example.com" -keyout "$dir/key.pem" -out "$dir/cert.pem" >/dev/null 2>&1
+          }
+          write_entry_env() {
+            local root="$1" any="$2" naive="$3" any_egress="$4" naive_egress="$5" with_b="$6" legacy_ss="${7:-0}"
+            local b_host="" b_port="" b_pass=""
+            if [[ "$with_b" == "1" ]]; then
+              b_host="198.51.100.20"
+              b_port="30003"
+              b_pass="b-upstream-secret"
+            fi
+            mkdir -p "$root/config"
+            make_cert "$root"
+            cat > "$root/config/lite.env" <<EOF
           PM_DOMAIN=example.com
-          PM_ROOT=$tmp
+          PM_ROOT=$root
           PM_SERVER_IP=203.0.113.10
-          PM_CONTAINER_NAME=pl-test
+          PM_CONTAINER_NAME=pl-test-$(basename "$root")
           PM_IMAGE=ghcr.io/sagernet/sing-box:latest
           PM_TZ=Asia/Shanghai
           PM_NODE_ROLE=entry_a
-          ENABLE_ANYTLS=1
-          ENABLE_NAIVE=1
-          ENABLE_SS=0
+          ENABLE_ANYTLS=$any
+          ENABLE_NAIVE=$naive
+          ENABLE_SS=$legacy_ss
+          ANYTLS_EGRESS=$any_egress
+          NAIVE_EGRESS=$naive_egress
           ANYTLS_PORT=30001
           NAIVE_PORT=30002
-          SS_PORT=
+          SS_PORT=31000
           ANYTLS_NAME=proxy
           ANYTLS_PASSWORD=any-secret
           NAIVE_USERNAME=legacy
           NAIVE_PASSWORD=naive-secret
           SS_METHOD=aes-128-gcm
-          SS_PASSWORD=
-          B_SS_HOST=198.51.100.20
-          B_SS_PORT=30003
+          SS_PASSWORD=legacy-user-secret
+          B_SS_HOST=$b_host
+          B_SS_PORT=$b_port
           B_SS_METHOD=aes-128-gcm
-          B_SS_PASSWORD=b-secret
-          CERT_FILE=$tmp/cert.pem
-          KEY_FILE=$tmp/key.pem
+          B_SS_PASSWORD=$b_pass
+          CERT_FILE=$root/cert.pem
+          KEY_FILE=$root/key.pem
           CREATED_AT='2026-06-15 00:00:00'
           EOF
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh change-secret anytls any-secret >/tmp/pl-render-test.out
-          jq -e '.outbounds[] | select(.tag=="egress-b")' "$tmp/config/sing-box.json" >/dev/null
-          jq -e '.route.final == "egress-b" and (.route.rule_set == null)' "$tmp/config/sing-box.json" >/dev/null
-          jq -e '.inbounds[] | select(.tag=="anytls-in") | .users[0].name == "proxy"' "$tmp/config/sing-box.json" >/dev/null
-          ! test -e "$tmp/config/users.json"
-          ! grep -R "b-secret" "$tmp/config/client" >/dev/null
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh check >/tmp/pl-singbox-check.out
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh change-secret naive changed-naive >/tmp/pl-rollback-setup.out
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh backup list >/tmp/pl-backup-list.out
+          }
+          assert_no_user_ss() {
+            local root="$1"
+            jq -e '[.inbounds[] | select(.tag=="ss-in")] | length == 0' "$root/config/sing-box.json" >/dev/null
+            test ! -f "$root/config/client/shadowsocks-outbound.json"
+          }
+
+          tmp_any_direct="$(mktemp -d)"
+          write_entry_env "$tmp_any_direct" 1 0 direct direct 0
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_any_direct" bash "$SCRIPT" change-secret anytls any-secret >/tmp/pl-any-direct.out
+          jq -e '.route.final == "direct" and (.route.rule_set == null)' "$tmp_any_direct/config/sing-box.json" >/dev/null
+          jq -e '.route.rules[] | select((.inbound == ["anytls-in"]) and .action == "route" and .outbound == "direct")' "$tmp_any_direct/config/sing-box.json" >/dev/null
+          jq -e '[.inbounds[] | select(.tag=="naive-in")] | length == 0' "$tmp_any_direct/config/sing-box.json" >/dev/null
+          jq -e '[.outbounds[] | select(.tag=="egress-b")] | length == 0' "$tmp_any_direct/config/sing-box.json" >/dev/null
+          test -f "$tmp_any_direct/config/client/anytls-outbound.json"
+          test ! -f "$tmp_any_direct/config/client/naive-outbound.json"
+          assert_no_user_ss "$tmp_any_direct"
+
+          tmp_naive_b="$(mktemp -d)"
+          write_entry_env "$tmp_naive_b" 0 1 direct egress-b 1
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_naive_b" bash "$SCRIPT" change-secret naive naive-secret >/tmp/pl-naive-b.out
+          jq -e '.route.final == "direct"' "$tmp_naive_b/config/sing-box.json" >/dev/null
+          jq -e '.route.rules[] | select((.inbound == ["naive-in"]) and .action == "route" and .outbound == "egress-b")' "$tmp_naive_b/config/sing-box.json" >/dev/null
+          jq -e '.outbounds[] | select(.tag=="egress-b")' "$tmp_naive_b/config/sing-box.json" >/dev/null
+          test -f "$tmp_naive_b/config/client/naive-outbound.json"
+          ! grep -R "b-upstream-secret" "$tmp_naive_b/config/client" >/dev/null
+          assert_no_user_ss "$tmp_naive_b"
+
+          tmp_mixed="$(mktemp -d)"
+          write_entry_env "$tmp_mixed" 1 1 direct egress-b 1
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" change-secret naive changed-naive >/tmp/pl-mixed.out
+          jq -e '.route.final == "direct"' "$tmp_mixed/config/sing-box.json" >/dev/null
+          jq -e '.route.rules[] | select((.inbound == ["anytls-in"]) and .outbound == "direct")' "$tmp_mixed/config/sing-box.json" >/dev/null
+          jq -e '.route.rules[] | select((.inbound == ["naive-in"]) and .outbound == "egress-b")' "$tmp_mixed/config/sing-box.json" >/dev/null
+          jq -e '.outbounds[] | select(.tag=="egress-b")' "$tmp_mixed/config/sing-box.json" >/dev/null
+          ! grep -R "b-upstream-secret" "$tmp_mixed/config/client" >/dev/null
+          assert_no_user_ss "$tmp_mixed"
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" check >/tmp/pl-mixed-check.out
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" backup list >/tmp/pl-backup-list.out
           grep -q 'lite.env' /tmp/pl-backup-list.out
-          grep -q 'NAIVE_PASSWORD=changed-naive' "$tmp/config/lite.env"
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh rollback latest >/tmp/pl-rollback.out
-          grep -q 'NAIVE_PASSWORD=naive-secret' "$tmp/config/lite.env"
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh upgrade --image ghcr.io/sagernet/sing-box:latest >/tmp/pl-upgrade.out
-          jq -e '.route.final == "egress-b" and (.route.rule_set == null)' "$tmp/config/sing-box.json" >/dev/null
-          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp" bash proxy-lite.sh upgrade --image ghcr.io/sagernet/sing-box:this-tag-should-not-exist >/tmp/pl-upgrade-fail.out 2>&1; then
+          grep -q 'NAIVE_PASSWORD=changed-naive' "$tmp_mixed/config/lite.env"
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" rollback latest >/tmp/pl-rollback.out
+          grep -q 'NAIVE_PASSWORD=naive-secret' "$tmp_mixed/config/lite.env"
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" upgrade --image ghcr.io/sagernet/sing-box:latest >/tmp/pl-upgrade.out
+          jq -e '.route.final == "direct"' "$tmp_mixed/config/sing-box.json" >/dev/null
+          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_mixed" bash "$SCRIPT" upgrade --image ghcr.io/sagernet/sing-box:this-tag-should-not-exist >/tmp/pl-upgrade-fail.out 2>&1; then
             echo "Expected invalid-image proxy-lite upgrade to fail" >&2
             exit 1
           fi
           grep -q '候选镜像拉取失败' /tmp/pl-upgrade-fail.out
-          grep -q 'PM_IMAGE=ghcr.io/sagernet/sing-box:latest' "$tmp/config/lite.env"
+          grep -q 'PM_IMAGE=ghcr.io/sagernet/sing-box:latest' "$tmp_mixed/config/lite.env"
+
+          tmp_reverse="$(mktemp -d)"
+          write_entry_env "$tmp_reverse" 1 1 egress-b direct 1
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_reverse" bash "$SCRIPT" change-secret anytls any-secret >/tmp/pl-reverse.out
+          jq -e '.route.rules[] | select((.inbound == ["anytls-in"]) and .outbound == "egress-b")' "$tmp_reverse/config/sing-box.json" >/dev/null
+          jq -e '.route.rules[] | select((.inbound == ["naive-in"]) and .outbound == "direct")' "$tmp_reverse/config/sing-box.json" >/dev/null
+          assert_no_user_ss "$tmp_reverse"
+
+          tmp_all_b="$(mktemp -d)"
+          write_entry_env "$tmp_all_b" 1 1 egress-b egress-b 1
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_all_b" bash "$SCRIPT" change-secret anytls any-secret >/tmp/pl-all-b.out
+          jq -e '[.route.rules[] | select(.outbound=="egress-b")] | length == 2' "$tmp_all_b/config/sing-box.json" >/dev/null
+          jq -e '.route.final == "direct"' "$tmp_all_b/config/sing-box.json" >/dev/null
+          assert_no_user_ss "$tmp_all_b"
+
+          tmp_all_direct="$(mktemp -d)"
+          write_entry_env "$tmp_all_direct" 1 1 direct direct 0
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_all_direct" bash "$SCRIPT" change-secret anytls any-secret >/tmp/pl-all-direct.out
+          jq -e '[.outbounds[] | select(.tag=="egress-b")] | length == 0' "$tmp_all_direct/config/sing-box.json" >/dev/null
+          jq -e '[.route.rules[] | select(.outbound=="direct")] | length == 2' "$tmp_all_direct/config/sing-box.json" >/dev/null
+          assert_no_user_ss "$tmp_all_direct"
+
+          tmp_legacy="$(mktemp -d)"
+          write_entry_env "$tmp_legacy" 1 0 direct direct 0 1
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_legacy" bash "$SCRIPT" change-secret anytls any-secret >/tmp/pl-legacy.out
+          assert_no_user_ss "$tmp_legacy"
+          ! grep -R "legacy-user-secret" "$tmp_legacy/config/client" >/dev/null
+
+          tmp_missing_b="$(mktemp -d)"
+          write_entry_env "$tmp_missing_b" 0 1 direct egress-b 0
+          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_missing_b" bash "$SCRIPT" change-secret naive naive-secret >/tmp/pl-missing-b.out 2>&1; then
+            echo "Expected missing B settings to fail" >&2
+            exit 1
+          fi
+          grep -q 'B_SS_HOST' /tmp/pl-missing-b.out
+
+          if PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role entry_a --domain example.com --server-ip 203.0.113.10 --root "$(mktemp -d)" --components ss >/tmp/pl-components-ss.out 2>&1; then
+            echo "Expected --components ss to fail" >&2
+            exit 1
+          fi
+          grep -q '不提供 Shadowsocks 用户入口' /tmp/pl-components-ss.out
+          if PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role entry_a --domain example.com --server-ip 203.0.113.10 --root "$(mktemp -d)" --components anytls,ss >/tmp/pl-components-any-ss.out 2>&1; then
+            echo "Expected --components anytls,ss to fail" >&2
+            exit 1
+          fi
+          grep -q '不提供 Shadowsocks 用户入口' /tmp/pl-components-any-ss.out
+          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_any_direct" bash "$SCRIPT" change-port ss 30009 >/tmp/pl-change-port-ss.out 2>&1; then
+            echo "Expected entry_a change-port ss to fail" >&2
+            exit 1
+          fi
+          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_any_direct" bash "$SCRIPT" change-secret ss nope >/tmp/pl-change-secret-ss.out 2>&1; then
+            echo "Expected entry_a change-secret ss to fail" >&2
+            exit 1
+          fi
+          if PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role invalid-role --root "$(mktemp -d)" >/tmp/pl-bad-role.out 2>&1; then
+            echo "Expected invalid role to fail" >&2
+            exit 1
+          fi
+          grep -q '未知节点角色：invalid-role' /tmp/pl-bad-role.out
+          if PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$(mktemp -d)" bash "$SCRIPT" info >/tmp/pl-missing-env.out 2>&1; then
+            echo "Expected missing env info to fail" >&2
+            exit 1
+          fi
+          grep -q '未找到配置文件' /tmp/pl-missing-env.out
+          if PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role entry_a --domain example.com --server-ip 203.0.113.10 --root "$(mktemp -d)" --components unknown >/tmp/pl-bad-component.out 2>&1; then
+            echo "Expected unknown component to fail" >&2
+            exit 1
+          fi
+          grep -q '未知组件：unknown' /tmp/pl-bad-component.out
+          install_direct_root="$(mktemp -d)"
+          make_cert "$install_direct_root"
+          PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role entry_a --domain example.com --server-ip 203.0.113.10 --root "$install_direct_root" --components anytls --anytls-egress direct --cert-file "$install_direct_root/cert.pem" --key-file "$install_direct_root/key.pem" --anytls-port 31001 --container-name pl-install-direct >/tmp/pl-install-direct.out
+          jq -e '[.outbounds[] | select(.tag=="egress-b")] | length == 0' "$install_direct_root/config/sing-box.json" >/dev/null
+          docker rm -f pl-install-direct >/dev/null 2>&1 || true
+
+          install_b_root="$(mktemp -d)"
+          PL_TEST_ALLOW_NON_ROOT=1 bash "$SCRIPT" install --yes --node-role egress_b --domain b.example.com --server-ip 198.51.100.20 --root "$install_b_root" --ss-port 31003 --ss-password old-b-secret --container-name pl-install-b >/tmp/pl-install-b.out
+          jq -e '.inbounds[] | select(.tag=="ss-landing-in" and .listen_port == 31003)' "$install_b_root/config/sing-box.json" >/dev/null
+          grep -q 'B_SS_PASSWORD=old-b-secret' "$install_b_root/config/lite.env"
+          docker rm -f pl-install-b >/dev/null 2>&1 || true
 
           tmp_b="$(mktemp -d)"
           mkdir -p "$tmp_b/config"
@@ -118,6 +246,8 @@ jobs:
           ENABLE_ANYTLS=0
           ENABLE_NAIVE=0
           ENABLE_SS=1
+          ANYTLS_EGRESS=direct
+          NAIVE_EGRESS=direct
           ANYTLS_PORT=
           NAIVE_PORT=
           SS_PORT=30003
@@ -126,18 +256,21 @@ jobs:
           NAIVE_USERNAME=proxyuser
           NAIVE_PASSWORD=
           SS_METHOD=aes-128-gcm
-          SS_PASSWORD=b-secret
+          SS_PASSWORD=b-upstream-secret
           B_SS_HOST=
           B_SS_PORT=30003
           B_SS_METHOD=aes-128-gcm
-          B_SS_PASSWORD=b-secret
+          B_SS_PASSWORD=b-upstream-secret
           CERT_FILE=
           KEY_FILE=
           CREATED_AT='2026-06-15 00:00:00'
           EOF
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_b" bash proxy-lite.sh change-secret ss b-secret >/tmp/pl-b-render.out
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_b" bash "$SCRIPT" change-secret b-ss b-upstream-secret >/tmp/pl-b-render.out
           jq -e '.inbounds[] | select(.tag=="ss-landing-in")' "$tmp_b/config/sing-box.json" >/dev/null
+          jq -e '[.inbounds[] | select(.tag=="anytls-in" or .tag=="naive-in")] | length == 0' "$tmp_b/config/sing-box.json" >/dev/null
           jq -e '.route.final == "direct" and (.route.rule_set == null)' "$tmp_b/config/sing-box.json" >/dev/null
           jq -e '[.outbounds[] | select(.tag=="egress-b")] | length == 0' "$tmp_b/config/sing-box.json" >/dev/null
-          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_b" bash proxy-lite.sh check >/tmp/pl-b-singbox-check.out
-          rm -rf "$tmp" "$tmp_b"
+          test -z "$(find "$tmp_b/config/client" -name '*.json' -print -quit 2>/dev/null)"
+          PL_TEST_ALLOW_NON_ROOT=1 PM_ROOT="$tmp_b" bash "$SCRIPT" check >/tmp/pl-b-singbox-check.out
+
+          rm -rf "$tmp_any_direct" "$tmp_naive_b" "$tmp_mixed" "$tmp_reverse" "$tmp_all_b" "$tmp_all_direct" "$tmp_legacy" "$tmp_missing_b" "$tmp_b"
