@@ -17,7 +17,7 @@ proxy-lite
 - GitHub：`https://github.com/jiasongji/proxy-lite`
 - Latest Release：`v0.1.2`
 - Release assets：`proxy-lite.sh`、`proxy-lite.sh.sha256`
-- `v0.1.2` 脚本 SHA-256：发布后回填
+- `v0.1.2` 脚本 SHA-256：`3d3372bc23f9ab03ceed3501f0d6f279a4b830f8243031b00ff796eb7abdec5d`
 
 ## 功能范围
 

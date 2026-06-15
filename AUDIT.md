@@ -6,7 +6,7 @@
 
 > 公开仓库不得包含真实服务器 IP、真实域名、登录端口、节点密码、B 上游凭据、订阅链接、token、证书/key 文件或本地凭据文件。
 
-发布状态：独立 GitHub 仓库 `https://github.com/jiasongji/proxy-lite`；本轮发布 `v0.1.2`，Release assets 为 `proxy-lite.sh` 与 `proxy-lite.sh.sha256`，`latest/download/proxy-lite.sh` 下载校验通过（SHA-256 见 README，发布后回填）。
+发布状态：独立 GitHub 仓库 `https://github.com/jiasongji/proxy-lite`；本轮发布 `v0.1.2`，Release assets 为 `proxy-lite.sh` 与 `proxy-lite.sh.sha256`，脚本 SHA-256 为 `3d3372bc23f9ab03ceed3501f0d6f279a4b830f8243031b00ff796eb7abdec5d`，`latest/download/proxy-lite.sh` 下载校验通过。
 
 ## 1. 本轮整改目标（v0.1.2，相对 v0.1.1）
 
