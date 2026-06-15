@@ -14,17 +14,17 @@
 <body>
 <div class="wrap">
   <header class="hero">
-    <span class="badge ok">Proxy Lite v0.1.1</span><span class="badge">sing-box</span><span class="badge">A/B relay</span><span class="badge">protocol egress</span>
+    <span class="badge ok">Proxy Lite v0.1.2</span><span class="badge">sing-box</span><span class="badge">A/B entries</span><span class="badge">protocol egress</span>
     <h1>Proxy Lite 部署运维手册</h1>
-    <p>轻量 A/B 中转落地脚本：服务器 A 只提供 AnyTLS / NaiveProxy 用户入口；服务器 B 只提供 Shadowsocks landing。AnyTLS 与 NaiveProxy 可分别选择 <code>direct</code> 或 <code>egress-b</code> 出口。</p>
+    <p>轻量 A/B 中转落地脚本：<strong>AnyTLS / NaiveProxy / Shadowsocks 三协议平级</strong>，服务器 A 与 B 都可直接提供用户入口；每个入口协议可独立选择 <code>direct</code> 或 <code>egress-b</code> 出口；Shadowsocks 同时承担 A→B 内部落地。</p>
   </header>
 
   <main class="grid">
     <nav class="card nav" aria-label="目录">
       <a href="#overview">1. 概览</a>
-      <a href="#requirements">2. 环境要求</a>
-      <a href="#install">3. 安装</a>
-      <a href="#topology">4. A/B 拓扑</a>
+      <a href="#concepts">2. 入口 vs 落地</a>
+      <a href="#install">3. 安装示例</a>
+      <a href="#topology">4. 路由</a>
       <a href="#commands">5. 命令</a>
       <a href="#upgrade">6. 升级回退</a>
       <a href="#audit">7. 审计</a>
@@ -34,36 +34,36 @@
     <section class="content">
       <section id="overview" class="card">
         <h2>1. 概览</h2>
-        <p>Proxy Lite 是完整 <code>proxy-manager</code> 的独立轻量项目，去掉多用户、流量限制和域名/IP 分流功能，只保留 A/B 中转落地与协议级出站选择。</p>
+        <p>Proxy Lite 是完整 <code>proxy-manager</code> 的独立轻量项目，去掉多用户、流量限制和域名/IP 分流功能，只保留 A/B 中转落地、三协议平级用户入口与协议级出站选择。</p>
         <table>
           <tr><th>项目</th><th>值</th></tr>
           <tr><td>短命令</td><td><code>PL</code>（大写）</td></tr>
           <tr><td>完整命令</td><td><code>proxy-lite</code></td></tr>
           <tr><td>GitHub</td><td><code>https://github.com/jiasongji/proxy-lite</code></td></tr>
-          <tr><td>Latest Release</td><td><code>v0.1.1</code></td></tr>
+          <tr><td>Latest Release</td><td><code>v0.1.2</code></td></tr>
           <tr><td>默认镜像</td><td><code>ghcr.io/sagernet/sing-box:latest</code></td></tr>
         </table>
-        <p>保留 AnyTLS、NaiveProxy、A-B 内部 Shadowsocks、Docker host network、真实 <code>sing-box check -c</code>、安全升级和失败回退。</p>
+        <p>保留 AnyTLS、NaiveProxy、Shadowsocks（用户入口 + A-B 内部落地）、Docker host network、真实 <code>sing-box check -c</code>、安全升级和失败回退。</p>
         <p>裁剪 user / route / stats / traffic / quota；不创建 <code>config/users.json</code>；不生成 <code>route.rule_set</code>。</p>
       </section>
 
-      <section id="requirements" class="card">
-        <h2>2. 环境要求</h2>
-        <ul>
-          <li>root 用户执行生产运维命令。</li>
-          <li>已安装 Docker 与 Docker Compose。</li>
-          <li>服务器 A 如启用 AnyTLS / NaiveProxy，需要可用 TLS 证书与私钥路径。</li>
-          <li>服务器 B 的 Shadowsocks 端口建议仅允许服务器 A 的公网 IP 访问。</li>
-        </ul>
+      <section id="concepts" class="card">
+        <h2>2. 用户入口 vs 内部落地</h2>
+        <table>
+          <tr><th>概念</th><th>含义</th><th>凭据</th><th>导出给用户</th></tr>
+          <tr><td>用户入口（anytls / naive / ss）</td><td>终端用户直接连接的入站协议</td><td><code>--components</code> + <code>*_PORT/*_PASSWORD</code></td><td>是</td></tr>
+          <tr><td>A-B 内部落地（b-ss）</td><td>A 经 B 出口时的 Shadowsocks 链路：A 的 <code>egress-b</code> 出站、B 的 <code>ss-landing-in</code> 入站</td><td><code>--b-ss-*</code></td><td>否</td></tr>
+        </table>
+        <div class="note">同一台服务器上「用户 SS 入口」与「A-B 落地」是两套独立的 Shadowsocks 入站：端口、密码互不相同。用户入口凭据写入 <code>config/client/</code>；落地凭据只保存在服务端，绝不外泄。</div>
       </section>
 
       <section id="install" class="card">
-        <h2>3. 安装</h2>
+        <h2>3. 安装示例</h2>
         <h3>快速安装</h3>
         <pre><button class="copy">复制</button><code>curl -fsSL https://github.com/jiasongji/proxy-lite/releases/latest/download/proxy-lite.sh -o /tmp/proxy-lite.sh
 bash /tmp/proxy-lite.sh install</code></pre>
 
-        <h3>服务器 B：Shadowsocks landing</h3>
+        <h3>服务器 B：仅作 A-B Shadowsocks 落地</h3>
         <pre><button class="copy">复制</button><code>PL install --yes \
   --node-role egress_b \
   --domain b.example.com \
@@ -72,44 +72,58 @@ bash /tmp/proxy-lite.sh install</code></pre>
   --b-ss-method aes-128-gcm \
   --b-ss-password '&lt;B_SS_PASSWORD&gt;'</code></pre>
 
-        <h3>服务器 A：只部署 AnyTLS direct</h3>
+        <h3>服务器 B：落地 + 直接提供 Shadowsocks 入口</h3>
         <pre><button class="copy">复制</button><code>PL install --yes \
-  --node-role entry_a \
-  --domain a.example.com \
-  --server-ip 203.0.113.10 \
-  --components anytls \
-  --anytls-egress direct \
-  --cert-file /path/fullchain.pem \
-  --key-file /path/privkey.pem \
-  --anytls-port 30001</code></pre>
+  --node-role egress_b \
+  --domain b.example.com \
+  --server-ip 198.51.100.20 \
+  --b-ss-port 30003 \
+  --b-ss-method aes-128-gcm \
+  --b-ss-password '&lt;B_SS_PASSWORD&gt;' \
+  --components ss \
+  --ss-port 30014 \
+  --ss-method aes-128-gcm \
+  --ss-password '&lt;USER_SS_PASSWORD&gt;'</code></pre>
 
-        <h3>服务器 A：只部署 NaiveProxy 经 B</h3>
+        <h3>服务器 A：只部署 Shadowsocks 入口，直出</h3>
         <pre><button class="copy">复制</button><code>PL install --yes \
   --node-role entry_a \
   --domain a.example.com \
   --server-ip 203.0.113.10 \
-  --components naive \
-  --naive-egress egress-b \
-  --cert-file /path/fullchain.pem \
-  --key-file /path/privkey.pem \
-  --naive-port 30002 \
+  --components ss \
+  --ss-egress direct \
+  --ss-port 30004 \
+  --ss-password '&lt;USER_SS_PASSWORD&gt;'</code></pre>
+
+        <h3>服务器 A：Shadowsocks 入口经 B 落地</h3>
+        <pre><button class="copy">复制</button><code>PL install --yes \
+  --node-role entry_a \
+  --domain a.example.com \
+  --server-ip 203.0.113.10 \
+  --components ss \
+  --ss-egress egress-b \
+  --ss-port 30004 \
+  --ss-password '&lt;USER_SS_PASSWORD&gt;' \
   --b-ss-host 198.51.100.20 \
   --b-ss-port 30003 \
   --b-ss-method aes-128-gcm \
   --b-ss-password '&lt;B_SS_PASSWORD&gt;'</code></pre>
 
-        <h3>服务器 A：AnyTLS direct + NaiveProxy 经 B</h3>
+        <h3>服务器 A：三协议混合出站（AnyTLS direct / NaiveProxy 经 B / Shadowsocks direct）</h3>
         <pre><button class="copy">复制</button><code>PL install --yes \
   --node-role entry_a \
   --domain a.example.com \
   --server-ip 203.0.113.10 \
-  --components anytls,naive \
+  --components anytls,naive,ss \
   --anytls-egress direct \
   --naive-egress egress-b \
+  --ss-egress direct \
   --cert-file /path/fullchain.pem \
   --key-file /path/privkey.pem \
   --anytls-port 30001 \
   --naive-port 30002 \
+  --ss-port 30004 \
+  --ss-password '&lt;USER_SS_PASSWORD&gt;' \
   --b-ss-host 198.51.100.20 \
   --b-ss-port 30003 \
   --b-ss-method aes-128-gcm \
@@ -117,26 +131,27 @@ bash /tmp/proxy-lite.sh install</code></pre>
       </section>
 
       <section id="topology" class="card">
-        <h2>4. A/B 拓扑</h2>
-        <p><code>entry_a</code> 上的用户入口只可能是 <code>anytls-in</code> 与 <code>naive-in</code>。Shadowsocks 只出现在 A 的 <code>egress-b</code> outbound 与 B 的 <code>ss-landing-in</code> inbound。</p>
+        <h2>4. 路由</h2>
+        <p><code>entry_a</code> 不做域名/IP/AI split 分流，只按用户入口协议 tag 路由，<code>route.final</code> 恒为 <code>direct</code>：<code>anytls-in</code> / <code>naive-in</code> / <code>ss-in</code> 分别按各自的 <code>*_EGRESS</code> 走 <code>direct</code> 或 <code>egress-b</code>。</p>
         <table>
           <tr><th>组合</th><th>参数</th><th>效果</th></tr>
-          <tr><td>AnyTLS direct</td><td><code>--components anytls --anytls-egress direct</code></td><td>用户连 A，出口为 A。</td></tr>
-          <tr><td>NaiveProxy 经 B</td><td><code>--components naive --naive-egress egress-b</code></td><td>用户连 A，出口为 B。</td></tr>
-          <tr><td>混合</td><td><code>--anytls-egress direct --naive-egress egress-b</code></td><td>AnyTLS 从 A 出口，NaiveProxy 从 B 出口。</td></tr>
-          <tr><td>全部经 B</td><td><code>--anytls-egress egress-b --naive-egress egress-b</code></td><td>两种入口都经 B。</td></tr>
-          <tr><td>全部 direct</td><td><code>--anytls-egress direct --naive-egress direct</code></td><td>两种入口都从 A 出口，不要求 B 参数。</td></tr>
+          <tr><td>任意协议 direct</td><td><code>--&lt;proto&gt;-egress direct</code></td><td>该入口从本机出口。</td></tr>
+          <tr><td>任意协议经 B</td><td><code>--&lt;proto&gt;-egress egress-b</code> + <code>--b-ss-*</code></td><td>该入口经 B 落地后直出。</td></tr>
+          <tr><td>混合</td><td>各协议分别指定</td><td>不同入口走不同出口。</td></tr>
+          <tr><td>全部 direct</td><td>所有 <code>--*-egress direct</code></td><td>无需 B 参数，不生成 <code>egress-b</code>。</td></tr>
         </table>
         <pre><code>{
   "route": {
     "rules": [
       { "inbound": ["anytls-in"], "action": "route", "outbound": "direct" },
-      { "inbound": ["naive-in"], "action": "route", "outbound": "egress-b" }
+      { "inbound": ["naive-in"], "action": "route", "outbound": "egress-b" },
+      { "inbound": ["ss-in"], "action": "route", "outbound": "direct" }
     ],
     "final": "direct"
   }
 }</code></pre>
-        <div class="note">只有至少一个协议选择 <code>egress-b</code> 时，服务器 A 才需要 <code>--b-ss-host</code>、<code>--b-ss-port</code>、<code>--b-ss-method</code>、<code>--b-ss-password</code>。</div>
+        <p><code>egress_b</code> 的所有入口协议与落地流量都从本机 <code>direct</code> 出口，路由为 <code>{ "final": "direct" }</code>。</p>
+        <div class="note">只有至少一个入口协议选择 <code>egress-b</code> 时，服务器 A 才需要 <code>--b-ss-host</code>、<code>--b-ss-port</code>、<code>--b-ss-method</code>、<code>--b-ss-password</code>。</div>
       </section>
 
       <section id="commands" class="card">
@@ -157,13 +172,15 @@ PL doctor
 PL topology
 PL change-port anytls 30001
 PL change-port naive 30002
+PL change-port ss 30004
 PL change-port b-ss 30003
 PL change-secret anytls
 PL change-secret naive
+PL change-secret ss
 PL change-secret b-ss
 PL regen
 PL uninstall</code></pre>
-        <p><code>b-ss</code> 表示 A-B 内部链路或 B landing。修改 <code>b-ss</code> 密码后，需要同步另一端配置。</p>
+        <p><code>anytls</code> / <code>naive</code> / <code>ss</code> 为用户入口端口或密码；<code>b-ss</code> 为 A-B 内部落地端口或密码，修改后需同步另一端。<code>change-secret all</code> / <code>regen</code> 只轮换本机用户入口，不自动改 <code>b-ss</code>。</p>
       </section>
 
       <section id="upgrade" class="card">
@@ -176,7 +193,8 @@ PL status</code></pre>
         <p><code>PL upgrade</code> 会先备份当前配置，拉取候选镜像，重新渲染配置，并使用候选镜像执行真实 <code>sing-box check -c</code>。校验通过才会应用；候选镜像拉取、配置渲染或配置检查失败时，会恢复更新前快照。</p>
         <pre><code>PL backup list
 PL rollback latest
-PL rollback 20260615-120000</code></pre>
+PL rollback 20260616-120000</code></pre>
+        <p>从 v0.1.1 升级是安全的：旧 <code>entry_a</code> 仍无 SS 用户入口，旧 <code>egress_b</code> 仍仅落地，除非显式 <code>--components ...ss...</code> 启用。</p>
       </section>
 
       <section id="audit" class="card">
@@ -184,8 +202,8 @@ PL rollback 20260615-120000</code></pre>
         <ul>
           <li><code>bash -n proxy-lite.sh</code> 与 ShellCheck。</li>
           <li>CLI help / menu smoke。</li>
-          <li>生成配置矩阵：AnyTLS only、NaiveProxy only、混合出站、全部 direct、全部经 B、B landing。</li>
-          <li>对抗测试：拒绝 A 侧 <code>--components ss</code>，旧 <code>ENABLE_SS=1</code> 不会生成用户 SS 入站，经 B 缺少 B 参数时失败。</li>
+          <li>生成配置矩阵：anytls/naive/ss 单协议与组合、ss direct、ss via B、三入口混合、全部 direct、全部经 B、B 仅落地、B 落地+anytls、B 落地+ss（双 SS 入站隔离）。</li>
+          <li>对抗测试：经 B 缺 B 参数失败、SS 入口端口与落地端口冲突失败、SS 用户密码不外泄、旧 env 迁移不产生 SS 用户入站。</li>
           <li>Docker <code>sing-box check -c</code> 真实检查。</li>
           <li>升级/回退 smoke：有效镜像通过，无效镜像失败并恢复快照。</li>
         </ul>
@@ -194,10 +212,10 @@ PL rollback 20260615-120000</code></pre>
       <section id="security" class="card">
         <h2>8. 安全</h2>
         <ul>
-          <li><code>B_SS_PASSWORD</code> 是 A-B 内部链路密码，不提供给终端用户。</li>
-          <li>客户端目录只导出 AnyTLS / NaiveProxy 配置和 full test client。</li>
+          <li><code>B_SS_PASSWORD</code> 是 A-B 内部落地密码，不提供给终端用户；与用户 SS 入口密码物理隔离。</li>
+          <li>客户端目录按启用入口导出 AnyTLS / NaiveProxy / Shadowsocks 配置与 full test client；仅落地节点不导出。</li>
           <li>公开文档仅使用占位 IP、域名、端口和密码。</li>
-          <li>B landing 端口建议在云安全组、防火墙或面板中限制为仅允许 A 的公网 IP。</li>
+          <li>B 的落地端口建议在云安全组、防火墙或面板中限制为仅允许 A 的公网 IP；B 的用户入口端口需对用户开放。</li>
         </ul>
       </section>
     </section>

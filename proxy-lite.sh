@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 REPO_URL="https://github.com/jiasongji/proxy-lite"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/jiasongji/proxy-lite/main/proxy-lite.sh"
 RELEASE_SCRIPT_URL="https://github.com/jiasongji/proxy-lite/releases/latest/download/proxy-lite.sh"
@@ -72,8 +72,10 @@ PM_NODE_ROLE="${PM_NODE_ROLE:-entry_a}"
 ENABLE_ANYTLS="${ENABLE_ANYTLS:-1}"
 ENABLE_NAIVE="${ENABLE_NAIVE:-1}"
 ENABLE_SS="${ENABLE_SS:-0}"
+ENABLE_SS_ENTRY="${ENABLE_SS_ENTRY:-0}"
 ANYTLS_EGRESS="${ANYTLS_EGRESS:-}"
 NAIVE_EGRESS="${NAIVE_EGRESS:-}"
+SS_EGRESS="${SS_EGRESS:-}"
 SS_METHOD="${SS_METHOD:-$DEFAULT_SS_METHOD}"
 NAIVE_USERNAME="${NAIVE_USERNAME:-$DEFAULT_NAIVE_USERNAME}"
 ANYTLS_NAME="${ANYTLS_NAME:-proxy}"
@@ -108,8 +110,10 @@ CLI_KEY_FILE=""
 CLI_ANYTLS_PORT=""
 CLI_NAIVE_PORT=""
 CLI_SS_PORT=""
+CLI_SS_METHOD=""
 CLI_ANYTLS_EGRESS=""
 CLI_NAIVE_EGRESS=""
+CLI_SS_EGRESS=""
 CLI_ANYTLS_NAME=""
 CLI_ANYTLS_PASSWORD=""
 CLI_NAIVE_USERNAME=""
@@ -161,10 +165,14 @@ while [[ "$#" -gt 0 ]]; do
       CLI_NAIVE_PORT="$(parse_arg_value "$1" "${2:-}" --naive-port)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
     --ss-port|--ss-port=*)
       CLI_SS_PORT="$(parse_arg_value "$1" "${2:-}" --ss-port)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
+    --ss-method|--ss-method=*)
+      CLI_SS_METHOD="$(parse_arg_value "$1" "${2:-}" --ss-method)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
     --anytls-egress|--anytls-egress=*)
       CLI_ANYTLS_EGRESS="$(parse_arg_value "$1" "${2:-}" --anytls-egress)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
     --naive-egress|--naive-egress=*)
       CLI_NAIVE_EGRESS="$(parse_arg_value "$1" "${2:-}" --naive-egress)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
+    --ss-egress|--ss-egress=*)
+      CLI_SS_EGRESS="$(parse_arg_value "$1" "${2:-}" --ss-egress)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
     --anytls-name|--anytls-name=*)
       CLI_ANYTLS_NAME="$(parse_arg_value "$1" "${2:-}" --anytls-name)"; if [[ "$1" == *=* ]]; then shift; else shift 2; fi ;;
     --anytls-password|--anytls-password=*)
@@ -226,11 +234,11 @@ require_root_for_command() {
 
 component_summary() {
   local parts=() out="" part
+  is_enabled "$ENABLE_ANYTLS" && parts+=("AnyTLS")
+  is_enabled "$ENABLE_NAIVE" && parts+=("NaiveProxy")
+  is_enabled "$ENABLE_SS_ENTRY" && parts+=("Shadowsocks")
   if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
     parts+=("Shadowsocks landing")
-  else
-    is_enabled "$ENABLE_ANYTLS" && parts+=("AnyTLS")
-    is_enabled "$ENABLE_NAIVE" && parts+=("NaiveProxy")
   fi
   if [[ "${#parts[@]}" -eq 0 ]]; then
     out="未选择用户入口"
@@ -246,7 +254,7 @@ component_summary() {
 role_label() {
   case "${PM_NODE_ROLE:-entry_a}" in
     entry_a) printf '服务器 A 用户入口/协议级出站' ;;
-    egress_b) printf '服务器 B Shadowsocks 落地出口' ;;
+    egress_b) printf '服务器 B 用户入口 + Shadowsocks 落地' ;;
     *) printf '%s' "$PM_NODE_ROLE" ;;
   esac
 }
@@ -260,11 +268,13 @@ apply_egress_defaults() {
   if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
     ANYTLS_EGRESS="direct"
     NAIVE_EGRESS="direct"
+    SS_EGRESS="direct"
     return 0
   fi
   if has_complete_b_ss_config; then default_egress="egress-b"; fi
   [[ -n "${ANYTLS_EGRESS:-}" ]] || ANYTLS_EGRESS="$default_egress"
   [[ -n "${NAIVE_EGRESS:-}" ]] || NAIVE_EGRESS="$default_egress"
+  [[ -n "${SS_EGRESS:-}" ]] || SS_EGRESS="$default_egress"
 }
 
 validate_egress_value() {
@@ -279,17 +289,18 @@ needs_egress_b() {
   [[ "${PM_NODE_ROLE:-entry_a}" == "entry_a" ]] || return 1
   if is_enabled "$ENABLE_ANYTLS" && [[ "${ANYTLS_EGRESS:-direct}" == "egress-b" ]]; then return 0; fi
   if is_enabled "$ENABLE_NAIVE" && [[ "${NAIVE_EGRESS:-direct}" == "egress-b" ]]; then return 0; fi
+  if is_enabled "$ENABLE_SS_ENTRY" && [[ "${SS_EGRESS:-direct}" == "egress-b" ]]; then return 0; fi
   return 1
 }
 
 egress_summary() {
   local parts=() out="" part
-  if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
-    printf 'Shadowsocks landing -> direct'
-    return 0
-  fi
   is_enabled "$ENABLE_ANYTLS" && parts+=("AnyTLS -> ${ANYTLS_EGRESS:-direct}")
   is_enabled "$ENABLE_NAIVE" && parts+=("NaiveProxy -> ${NAIVE_EGRESS:-direct}")
+  is_enabled "$ENABLE_SS_ENTRY" && parts+=("Shadowsocks -> ${SS_EGRESS:-direct}")
+  if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
+    parts+=("Shadowsocks landing -> direct")
+  fi
   if [[ "${#parts[@]}" -eq 0 ]]; then
     printf '未启用用户入口'
     return 0
@@ -403,13 +414,11 @@ validate_node_role() {
 
 validate_enabled_components() {
   if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
-    ENABLE_ANYTLS=0
-    ENABLE_NAIVE=0
     ENABLE_SS=1
   else
     ENABLE_SS=0
-    if ! is_enabled "$ENABLE_ANYTLS" && ! is_enabled "$ENABLE_NAIVE"; then
-      die "服务器 A 至少需要启用一个用户入口协议：AnyTLS 或 NaiveProxy。"
+    if ! is_enabled "$ENABLE_ANYTLS" && ! is_enabled "$ENABLE_NAIVE" && ! is_enabled "$ENABLE_SS_ENTRY"; then
+      die "服务器 A 至少需要启用一个用户入口协议：AnyTLS、NaiveProxy 或 Shadowsocks。"
     fi
   fi
 }
@@ -417,12 +426,12 @@ validate_enabled_components() {
 validate_unique_ports() {
   validate_enabled_components
   local ports=() names=() i j
-  if [[ "$PM_NODE_ROLE" == "entry_a" ]]; then
-    if is_enabled "$ENABLE_ANYTLS"; then validate_port_number "$ANYTLS_PORT" || die "AnyTLS 端口无效：$ANYTLS_PORT"; ports+=("$ANYTLS_PORT"); names+=("AnyTLS"); fi
-    if is_enabled "$ENABLE_NAIVE"; then validate_port_number "$NAIVE_PORT" || die "NaiveProxy 端口无效：$NAIVE_PORT"; ports+=("$NAIVE_PORT"); names+=("NaiveProxy"); fi
-  else
-    validate_port_number "$SS_PORT" || die "Shadowsocks landing 端口无效：$SS_PORT"
-    ports+=("$SS_PORT"); names+=("Shadowsocks landing")
+  if is_enabled "$ENABLE_ANYTLS"; then validate_port_number "$ANYTLS_PORT" || die "AnyTLS 端口无效：$ANYTLS_PORT"; ports+=("$ANYTLS_PORT"); names+=("AnyTLS"); fi
+  if is_enabled "$ENABLE_NAIVE"; then validate_port_number "$NAIVE_PORT" || die "NaiveProxy 端口无效：$NAIVE_PORT"; ports+=("$NAIVE_PORT"); names+=("NaiveProxy"); fi
+  if is_enabled "$ENABLE_SS_ENTRY"; then validate_port_number "$SS_PORT" || die "Shadowsocks 用户入口端口无效：$SS_PORT"; ports+=("$SS_PORT"); names+=("Shadowsocks 入口"); fi
+  if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
+    validate_port_number "$B_SS_PORT" || die "Shadowsocks landing 端口无效：$B_SS_PORT"
+    ports+=("$B_SS_PORT"); names+=("Shadowsocks landing")
   fi
   for ((i=0; i<${#ports[@]}; i++)); do
     for ((j=i+1; j<${#ports[@]}; j++)); do
@@ -437,11 +446,14 @@ validate_topology_config() {
   case "$PM_NODE_ROLE" in
     entry_a)
       ENABLE_SS=0
-      SS_PORT=""
-      SS_PASSWORD=""
+      if ! is_enabled "$ENABLE_SS_ENTRY"; then
+        SS_PORT=""
+        SS_PASSWORD=""
+      fi
       validate_enabled_components
       if is_enabled "$ENABLE_ANYTLS"; then validate_egress_value "ANYTLS_EGRESS" "$ANYTLS_EGRESS"; fi
       if is_enabled "$ENABLE_NAIVE"; then validate_egress_value "NAIVE_EGRESS" "$NAIVE_EGRESS"; fi
+      if is_enabled "$ENABLE_SS_ENTRY"; then validate_egress_value "SS_EGRESS" "$SS_EGRESS"; fi
       if needs_egress_b; then
         [[ -n "$B_SS_HOST" ]] || die "有协议选择 egress-b 时必须填写 B_SS_HOST。"
         validate_port_number "$B_SS_PORT" || die "B_SS_PORT 无效：$B_SS_PORT"
@@ -450,31 +462,32 @@ validate_topology_config() {
       fi
       ;;
     egress_b)
-      B_SS_PORT="${B_SS_PORT:-${SS_PORT:-}}"
-      B_SS_METHOD="${B_SS_METHOD:-${SS_METHOD:-$DEFAULT_SS_METHOD}}"
-      B_SS_PASSWORD="${B_SS_PASSWORD:-${SS_PASSWORD:-}}"
+      ENABLE_SS=1
+      if ! is_enabled "$ENABLE_SS_ENTRY"; then
+        B_SS_PORT="${B_SS_PORT:-${SS_PORT:-}}"
+        B_SS_METHOD="${B_SS_METHOD:-${SS_METHOD:-$DEFAULT_SS_METHOD}}"
+        B_SS_PASSWORD="${B_SS_PASSWORD:-${SS_PASSWORD:-}}"
+        SS_PORT=""
+        SS_PASSWORD=""
+      fi
       validate_port_number "$B_SS_PORT" || die "服务器 B 的 Shadowsocks landing 端口无效：$B_SS_PORT"
       [[ -n "$B_SS_METHOD" ]] || die "服务器 B 的 Shadowsocks method 为空。"
       [[ -n "$B_SS_PASSWORD" ]] || die "服务器 B 的 Shadowsocks 密码为空。"
-      SS_PORT="$B_SS_PORT"
-      SS_METHOD="$B_SS_METHOD"
-      SS_PASSWORD="$B_SS_PASSWORD"
-      ENABLE_ANYTLS=0
-      ENABLE_NAIVE=0
-      ENABLE_SS=1
+      validate_enabled_components
       ANYTLS_EGRESS="direct"
       NAIVE_EGRESS="direct"
+      SS_EGRESS="direct"
       ;;
   esac
 }
 
 active_port_regex() {
   local ports=()
-  if [[ "${PM_NODE_ROLE:-entry_a}" == "entry_a" ]]; then
-    is_enabled "$ENABLE_ANYTLS" && ports+=("$ANYTLS_PORT")
-    is_enabled "$ENABLE_NAIVE" && ports+=("$NAIVE_PORT")
-  elif is_enabled "$ENABLE_SS"; then
-    ports+=("$SS_PORT")
+  is_enabled "$ENABLE_ANYTLS" && ports+=("$ANYTLS_PORT")
+  is_enabled "$ENABLE_NAIVE" && ports+=("$NAIVE_PORT")
+  is_enabled "$ENABLE_SS_ENTRY" && ports+=("$SS_PORT")
+  if [[ "${PM_NODE_ROLE:-entry_a}" == "egress_b" ]]; then
+    ports+=("$B_SS_PORT")
   fi
   local IFS='|'
   printf '%s' "${ports[*]}"
@@ -540,8 +553,10 @@ write_env() {
     printf 'ENABLE_ANYTLS=%s\n' "$(shell_quote "$ENABLE_ANYTLS")"
     printf 'ENABLE_NAIVE=%s\n' "$(shell_quote "$ENABLE_NAIVE")"
     printf 'ENABLE_SS=%s\n' "$(shell_quote "$ENABLE_SS")"
+    printf 'ENABLE_SS_ENTRY=%s\n' "$(shell_quote "$ENABLE_SS_ENTRY")"
     printf 'ANYTLS_EGRESS=%s\n' "$(shell_quote "$ANYTLS_EGRESS")"
     printf 'NAIVE_EGRESS=%s\n' "$(shell_quote "$NAIVE_EGRESS")"
+    printf 'SS_EGRESS=%s\n' "$(shell_quote "$SS_EGRESS")"
     printf 'ANYTLS_PORT=%s\n' "$(shell_quote "$ANYTLS_PORT")"
     printf 'NAIVE_PORT=%s\n' "$(shell_quote "$NAIVE_PORT")"
     printf 'SS_PORT=%s\n' "$(shell_quote "$SS_PORT")"
@@ -567,25 +582,25 @@ load_env_required() {
   [[ -f "$ENV_FILE" ]] || die "未找到配置文件：${ENV_FILE}，请先执行 proxy-lite install 或 PL install。"
   safe_source_env "$ENV_FILE"
   PM_NODE_ROLE="${PM_NODE_ROLE:-entry_a}"
+  ENABLE_SS_ENTRY="${ENABLE_SS_ENTRY:-0}"
   B_SS_METHOD="${B_SS_METHOD:-$DEFAULT_SS_METHOD}"
   validate_node_role
   apply_egress_defaults
   if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-    B_SS_PORT="${B_SS_PORT:-${SS_PORT:-}}"
-    B_SS_PASSWORD="${B_SS_PASSWORD:-${SS_PASSWORD:-}}"
-    B_SS_METHOD="${B_SS_METHOD:-${SS_METHOD:-$DEFAULT_SS_METHOD}}"
-    SS_PORT="${SS_PORT:-$B_SS_PORT}"
-    SS_PASSWORD="${SS_PASSWORD:-$B_SS_PASSWORD}"
-    SS_METHOD="${SS_METHOD:-$B_SS_METHOD}"
-    ENABLE_ANYTLS=0
-    ENABLE_NAIVE=0
     ENABLE_SS=1
-    ANYTLS_EGRESS="direct"
-    NAIVE_EGRESS="direct"
+    if ! is_enabled "$ENABLE_SS_ENTRY"; then
+      B_SS_PORT="${B_SS_PORT:-${SS_PORT:-}}"
+      B_SS_PASSWORD="${B_SS_PASSWORD:-${SS_PASSWORD:-}}"
+      B_SS_METHOD="${B_SS_METHOD:-${SS_METHOD:-$DEFAULT_SS_METHOD}}"
+      SS_PORT=""
+      SS_PASSWORD=""
+    fi
   else
     ENABLE_SS=0
-    SS_PORT=""
-    SS_PASSWORD=""
+    if ! is_enabled "$ENABLE_SS_ENTRY"; then
+      SS_PORT=""
+      SS_PASSWORD=""
+    fi
   fi
 }
 
@@ -709,11 +724,11 @@ normalize_components() {
     token="$(printf '%s' "$token" | tr -d '[:space:]')"
     [[ -n "$token" ]] || continue
     case "$token" in
-      all) normalized="anytls,naive" ;;
+      all) normalized="anytls,naive,ss" ;;
       anytls|any) normalized+="${normalized:+,}anytls" ;;
       naive|naiveproxy) normalized+="${normalized:+,}naive" ;;
-      ss|shadowsocks) die "proxy-lite 不提供 Shadowsocks 用户入口；Shadowsocks 仅用于服务器 A-B 中间链路，请使用 --components anytls、naive 或 all。" ;;
-      *) die "未知组件：${token}。支持 anytls、naive、all。" ;;
+      ss|shadowsocks) normalized+="${normalized:+,}ss" ;;
+      *) die "未知组件：${token}。支持 anytls、naive、ss、all。" ;;
     esac
   done
   printf '%s\n' "$normalized"
@@ -723,23 +738,35 @@ apply_components() {
   local normalized="$1"
   ENABLE_ANYTLS=0
   ENABLE_NAIVE=0
-  ENABLE_SS=0
+  ENABLE_SS_ENTRY=0
   [[ ",$normalized," == *,anytls,* ]] && ENABLE_ANYTLS=1
   [[ ",$normalized," == *,naive,* ]] && ENABLE_NAIVE=1
+  [[ ",$normalized," == *,ss,* ]] && ENABLE_SS_ENTRY=1
   return 0
 }
 
 select_components() {
   local default_components raw normalized
   if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-    ENABLE_ANYTLS=0; ENABLE_NAIVE=0; ENABLE_SS=1
+    default_components=""
+    if [[ -n "$CLI_COMPONENTS" ]]; then
+      raw="$CLI_COMPONENTS"
+    else
+      raw="$(prompt_value '服务器 B 直接提供的用户入口协议（可留空仅作落地；anytls,naive,ss,all）' "$default_components")"
+    fi
+    if [[ -z "$raw" ]]; then
+      ENABLE_ANYTLS=0; ENABLE_NAIVE=0; ENABLE_SS_ENTRY=0
+      return 0
+    fi
+    normalized="$(normalize_components "$raw")"
+    apply_components "$normalized"
     return 0
   fi
   default_components="anytls,naive"
   if [[ -n "$CLI_COMPONENTS" ]]; then
     raw="$CLI_COMPONENTS"
   else
-    raw="$(prompt_value '服务器 A 启用用户入口协议（anytls,naive,all）' "$default_components")"
+    raw="$(prompt_value '服务器 A 启用用户入口协议（anytls,naive,ss,all）' "$default_components")"
   fi
   normalized="$(normalize_components "$raw")"
   [[ -n "$normalized" ]] || die "至少需要选择一个用户入口协议。"
@@ -778,16 +805,14 @@ collect_protocol_egress_inputs() {
   if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
     ANYTLS_EGRESS="direct"
     NAIVE_EGRESS="direct"
+    SS_EGRESS="direct"
     return 0
-  fi
-  if [[ -n "$CLI_SS_PORT" || -n "$CLI_SS_PASSWORD" ]]; then
-    die "服务器 A 不提供 Shadowsocks 用户入口；请不要使用 --ss-port 或 --ss-password。"
   fi
   if is_enabled "$ENABLE_ANYTLS"; then
     if [[ -n "$CLI_ANYTLS_EGRESS" ]]; then
       ANYTLS_EGRESS="$CLI_ANYTLS_EGRESS"
     else
-      ANYTLS_EGRESS="$(prompt_value 'AnyTLS 出站方式（direct=服务器A本机出口，egress-b=经服务器B落地）' "${ANYTLS_EGRESS:-egress-b}")"
+      ANYTLS_EGRESS="$(prompt_value 'AnyTLS 出站方式（direct=服务器A本机出口，egress-b=经服务器B落地）' "${ANYTLS_EGRESS:-direct}")"
     fi
     validate_egress_value "ANYTLS_EGRESS" "$ANYTLS_EGRESS"
   else
@@ -797,11 +822,21 @@ collect_protocol_egress_inputs() {
     if [[ -n "$CLI_NAIVE_EGRESS" ]]; then
       NAIVE_EGRESS="$CLI_NAIVE_EGRESS"
     else
-      NAIVE_EGRESS="$(prompt_value 'NaiveProxy 出站方式（direct=服务器A本机出口，egress-b=经服务器B落地）' "${NAIVE_EGRESS:-egress-b}")"
+      NAIVE_EGRESS="$(prompt_value 'NaiveProxy 出站方式（direct=服务器A本机出口，egress-b=经服务器B落地）' "${NAIVE_EGRESS:-direct}")"
     fi
     validate_egress_value "NAIVE_EGRESS" "$NAIVE_EGRESS"
   else
     NAIVE_EGRESS="direct"
+  fi
+  if is_enabled "$ENABLE_SS_ENTRY"; then
+    if [[ -n "$CLI_SS_EGRESS" ]]; then
+      SS_EGRESS="$CLI_SS_EGRESS"
+    else
+      SS_EGRESS="$(prompt_value 'Shadowsocks 用户入口出站方式（direct=服务器A本机出口，egress-b=经服务器B落地）' "${SS_EGRESS:-direct}")"
+    fi
+    validate_egress_value "SS_EGRESS" "$SS_EGRESS"
+  else
+    SS_EGRESS="direct"
   fi
 }
 
@@ -813,18 +848,14 @@ collect_b_ss_inputs_if_needed() {
     should_collect=1
   fi
   if [[ "$should_collect" -eq 1 ]]; then
-    if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-      [[ -n "$CLI_SS_PORT" ]] && B_SS_PORT="$CLI_SS_PORT"
-      [[ -n "$CLI_SS_PASSWORD" ]] && B_SS_PASSWORD="$CLI_SS_PASSWORD"
-    fi
     if [[ "$PM_NODE_ROLE" == "entry_a" ]]; then
-      if [[ -n "$CLI_B_SS_HOST" ]]; then B_SS_HOST="$CLI_B_SS_HOST"; else B_SS_HOST="$(prompt_value '服务器 B Shadowsocks 地址' "$B_SS_HOST")"; fi
+      if [[ -n "$CLI_B_SS_HOST" ]]; then B_SS_HOST="$CLI_B_SS_HOST"; else B_SS_HOST="$(prompt_value '服务器 B Shadowsocks 落地地址' "$B_SS_HOST")"; fi
     elif [[ -n "$CLI_B_SS_HOST" ]]; then
       B_SS_HOST="$CLI_B_SS_HOST"
     fi
-    if [[ -n "$CLI_B_SS_PORT" ]]; then B_SS_PORT="$CLI_B_SS_PORT"; else B_SS_PORT="$(prompt_port '服务器 B Shadowsocks 端口' "$B_SS_PORT")"; fi
-    if [[ -n "$CLI_B_SS_METHOD" ]]; then B_SS_METHOD="$CLI_B_SS_METHOD"; else B_SS_METHOD="$(prompt_value '服务器 B Shadowsocks method' "${B_SS_METHOD:-$DEFAULT_SS_METHOD}")"; fi
-    if [[ -n "$CLI_B_SS_PASSWORD" ]]; then B_SS_PASSWORD="$CLI_B_SS_PASSWORD"; else B_SS_PASSWORD="$(prompt_value '服务器 B Shadowsocks 密码' "$B_SS_PASSWORD")"; fi
+    if [[ -n "$CLI_B_SS_PORT" ]]; then B_SS_PORT="$CLI_B_SS_PORT"; else B_SS_PORT="$(prompt_port '服务器 B Shadowsocks 落地端口' "$B_SS_PORT")"; fi
+    if [[ -n "$CLI_B_SS_METHOD" ]]; then B_SS_METHOD="$CLI_B_SS_METHOD"; else B_SS_METHOD="$(prompt_value '服务器 B Shadowsocks 落地 method' "${B_SS_METHOD:-$DEFAULT_SS_METHOD}")"; fi
+    if [[ -n "$CLI_B_SS_PASSWORD" ]]; then B_SS_PASSWORD="$CLI_B_SS_PASSWORD"; else B_SS_PASSWORD="$(prompt_value '服务器 B Shadowsocks 落地密码' "$B_SS_PASSWORD")"; fi
   fi
 }
 
@@ -865,10 +896,16 @@ collect_install_inputs() {
     NAIVE_PORT=""; NAIVE_PASSWORD=""
   fi
 
+  if is_enabled "$ENABLE_SS_ENTRY"; then
+    if [[ -n "$CLI_SS_PORT" ]]; then SS_PORT="$CLI_SS_PORT"; else SS_PORT="$(prompt_port 'Shadowsocks 用户入口监听端口' "${SS_PORT:-}")"; fi
+    if [[ -n "$CLI_SS_METHOD" ]]; then SS_METHOD="$CLI_SS_METHOD"; else SS_METHOD="$(prompt_value 'Shadowsocks 用户入口 method' "${SS_METHOD:-$DEFAULT_SS_METHOD}")"; fi
+    if [[ -n "$CLI_SS_PASSWORD" ]]; then SS_PASSWORD="$CLI_SS_PASSWORD"; else SS_PASSWORD="$(prompt_value 'Shadowsocks 用户入口密码，回车自动生成' "${SS_PASSWORD:-$(random_hex)}")"; fi
+  else
+    SS_PORT=""; SS_PASSWORD=""
+  fi
+
   if [[ "$PM_NODE_ROLE" != "egress_b" ]]; then
     ENABLE_SS=0
-    SS_PORT=""
-    SS_PASSWORD=""
   fi
 
   validate_topology_config
@@ -888,9 +925,11 @@ render_singbox_config() {
     --arg role "$PM_NODE_ROLE" \
     --arg enable_anytls "$ENABLE_ANYTLS" \
     --arg enable_naive "$ENABLE_NAIVE" \
+    --arg enable_ss_entry "$ENABLE_SS_ENTRY" \
     --arg enable_egress_b "$enable_egress_b" \
     --arg anytls_egress "$ANYTLS_EGRESS" \
     --arg naive_egress "$NAIVE_EGRESS" \
+    --arg ss_egress "$SS_EGRESS" \
     --arg domain "$PM_DOMAIN" \
     --arg cert "$CERT_FILE" \
     --arg key "$KEY_FILE" \
@@ -900,6 +939,9 @@ render_singbox_config() {
     --arg naive_port "${NAIVE_PORT:-0}" \
     --arg naive_user "$NAIVE_USERNAME" \
     --arg naive_pass "$NAIVE_PASSWORD" \
+    --arg ss_port "${SS_PORT:-0}" \
+    --arg ss_method "$SS_METHOD" \
+    --arg ss_pass "$SS_PASSWORD" \
     --arg b_host "$B_SS_HOST" \
     --arg b_port "${B_SS_PORT:-0}" \
     --arg b_method "$B_SS_METHOD" \
@@ -913,6 +955,10 @@ render_singbox_config() {
       if $enable_naive == "1" then
         {type:"naive", tag:"naive-in", listen:"0.0.0.0", listen_port:($naive_port|tonumber), users:[{username:$naive_user, password:$naive_pass}], tls:{enabled:true, server_name:$domain, certificate_path:$cert, key_path:$key}}
       else empty end;
+    def ss_in:
+      if $enable_ss_entry == "1" then
+        {type:"shadowsocks", tag:"ss-in", listen:"0.0.0.0", listen_port:($ss_port|tonumber), method:$ss_method, password:$ss_pass}
+      else empty end;
     def ss_landing_in:
       {type:"shadowsocks", tag:"ss-landing-in", listen:"0.0.0.0", listen_port:($b_port|tonumber), method:$b_method, password:$b_pass};
     def direct_out: {type:"direct", tag:"direct"};
@@ -921,11 +967,13 @@ render_singbox_config() {
       if $enable_anytls == "1" then {inbound:["anytls-in"], action:"route", outbound:$anytls_egress} else empty end;
     def naive_rule:
       if $enable_naive == "1" then {inbound:["naive-in"], action:"route", outbound:$naive_egress} else empty end;
+    def ss_rule:
+      if $enable_ss_entry == "1" then {inbound:["ss-in"], action:"route", outbound:$ss_egress} else empty end;
     {
       log: {level:"info", timestamp:true},
-      inbounds: (if $role == "egress_b" then [ss_landing_in] else [anytls_in, naive_in] end),
+      inbounds: (if $role == "egress_b" then [anytls_in, naive_in, ss_in, ss_landing_in] else [anytls_in, naive_in, ss_in] end),
       outbounds: (if $role == "entry_a" then [direct_out, (if $enable_egress_b == "1" then egress_b_out else empty end)] else [direct_out] end),
-      route: (if $role == "entry_a" then {rules:[anytls_rule, naive_rule], final:"direct"} else {final:"direct"} end)
+      route: (if $role == "entry_a" then {rules:[anytls_rule, naive_rule, ss_rule], final:"direct"} else {final:"direct"} end)
     }
     ' > "$tmp"; then
     rm -f "$tmp"
@@ -942,9 +990,9 @@ append_outbound_sep() {
 
 render_client_configs() {
   ensure_dirs
-  [[ "$PM_NODE_ROLE" == "entry_a" ]] || { rm -f "$(CLIENT_DIR)"/*.json 2>/dev/null || true; return 0; }
-  local d any_name any_pass naive_user naive_pass full first tags final_tag i
   rm -f "$(CLIENT_DIR)"/*.json 2>/dev/null || true
+  [[ "$PM_NODE_ROLE" == "entry_a" || "$PM_NODE_ROLE" == "egress_b" ]] || return 0
+  local d any_name any_pass naive_user naive_pass ss_pass ss_method full first tags final_tag i
   d="$(json_string "$PM_DOMAIN")"
   if is_enabled "$ENABLE_ANYTLS"; then
     any_name="$(json_string "$ANYTLS_NAME")"
@@ -982,9 +1030,28 @@ EOF
 }
 EOF
   fi
+  if is_enabled "$ENABLE_SS_ENTRY"; then
+    ss_method="$(json_string "$SS_METHOD")"
+    ss_pass="$(json_string "$SS_PASSWORD")"
+    cat > "$(CLIENT_DIR)/shadowsocks-outbound.json" <<EOF
+{
+  "type": "shadowsocks",
+  "tag": "ss-out",
+  "server": $d,
+  "server_port": ${SS_PORT},
+  "method": $ss_method,
+  "password": $ss_pass
+}
+EOF
+  fi
+
+  tags=()
+  [[ -f "$(CLIENT_DIR)/anytls-outbound.json" ]] && tags+=("anytls-out")
+  [[ -f "$(CLIENT_DIR)/naive-outbound.json" ]] && tags+=("naive-out")
+  [[ -f "$(CLIENT_DIR)/shadowsocks-outbound.json" ]] && tags+=("ss-out")
+  [[ "${#tags[@]}" -gt 0 ]] || { chmod 600 "$(CLIENT_DIR)"/*.json 2>/dev/null || true; return 0; }
 
   full="$(CLIENT_DIR)/full-test-client.json"
-  tags=()
   cat > "$full" <<'EOF'
 {
   "log": {
@@ -1003,12 +1070,16 @@ EOF
 EOF
   first=1
   if [[ -f "$(CLIENT_DIR)/anytls-outbound.json" ]]; then
-    append_outbound_sep "$full" "$first"; first=0; tags+=("anytls-out")
+    append_outbound_sep "$full" "$first"; first=0
     sed 's/^/    /' "$(CLIENT_DIR)/anytls-outbound.json" >> "$full"
   fi
   if [[ -f "$(CLIENT_DIR)/naive-outbound.json" ]]; then
-    append_outbound_sep "$full" "$first"; first=0; tags+=("naive-out")
+    append_outbound_sep "$full" "$first"; first=0
     sed 's/^/    /' "$(CLIENT_DIR)/naive-outbound.json" >> "$full"
+  fi
+  if [[ -f "$(CLIENT_DIR)/shadowsocks-outbound.json" ]]; then
+    append_outbound_sep "$full" "$first"; first=0
+    sed 's/^/    /' "$(CLIENT_DIR)/shadowsocks-outbound.json" >> "$full"
   fi
   if [[ "${#tags[@]}" -gt 1 ]]; then
     append_outbound_sep "$full" "$first"; first=0
@@ -1093,12 +1164,18 @@ render_all() {
     [[ -n "$NAIVE_USERNAME" ]] || NAIVE_USERNAME="$DEFAULT_NAIVE_USERNAME"
     [[ -n "$NAIVE_PASSWORD" ]] || NAIVE_PASSWORD="$(random_hex)"
   fi
-  if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then
+  if is_enabled "$ENABLE_SS_ENTRY"; then
     [[ -n "$SS_METHOD" ]] || SS_METHOD="$DEFAULT_SS_METHOD"
     [[ -n "$SS_PASSWORD" ]] || SS_PASSWORD="$(random_hex)"
-    B_SS_PORT="${B_SS_PORT:-$SS_PORT}"
-    B_SS_METHOD="${B_SS_METHOD:-$SS_METHOD}"
-    B_SS_PASSWORD="${B_SS_PASSWORD:-$SS_PASSWORD}"
+  fi
+  if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then
+    if ! is_enabled "$ENABLE_SS_ENTRY"; then
+      B_SS_PORT="${B_SS_PORT:-$SS_PORT}"
+      B_SS_METHOD="${B_SS_METHOD:-${SS_METHOD:-$DEFAULT_SS_METHOD}}"
+      B_SS_PASSWORD="${B_SS_PASSWORD:-$SS_PASSWORD}"
+    fi
+    [[ -n "$B_SS_METHOD" ]] || B_SS_METHOD="$DEFAULT_SS_METHOD"
+    [[ -n "$B_SS_PASSWORD" ]] || B_SS_PASSWORD="$(random_hex)"
   fi
   write_env || return 1
   render_singbox_config || return 1
@@ -1149,21 +1226,23 @@ open_firewall_ports() {
   local opened=0
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
     if [[ "$AUTO_YES" -eq 1 ]] || prompt_yes_no '检测到 UFW 防火墙，是否自动放行已启用组件端口' 'Y'; then
-      if [[ "$PM_NODE_ROLE" == "entry_a" ]] && is_enabled "$ENABLE_ANYTLS"; then ufw allow "${ANYTLS_PORT}/tcp"; opened=1; fi
-      if [[ "$PM_NODE_ROLE" == "entry_a" ]] && is_enabled "$ENABLE_NAIVE"; then ufw allow "${NAIVE_PORT}/tcp"; ufw allow "${NAIVE_PORT}/udp"; opened=1; fi
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then ufw allow "${SS_PORT}/tcp"; ufw allow "${SS_PORT}/udp"; opened=1; fi
+      if is_enabled "$ENABLE_ANYTLS"; then ufw allow "${ANYTLS_PORT}/tcp"; opened=1; fi
+      if is_enabled "$ENABLE_NAIVE"; then ufw allow "${NAIVE_PORT}/tcp"; ufw allow "${NAIVE_PORT}/udp"; opened=1; fi
+      if is_enabled "$ENABLE_SS_ENTRY"; then ufw allow "${SS_PORT}/tcp"; ufw allow "${SS_PORT}/udp"; opened=1; fi
+      if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then ufw allow "${B_SS_PORT}/tcp"; ufw allow "${B_SS_PORT}/udp"; opened=1; fi
     fi
   elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     if [[ "$AUTO_YES" -eq 1 ]] || prompt_yes_no '检测到 firewalld，是否自动放行已启用组件端口' 'Y'; then
-      if [[ "$PM_NODE_ROLE" == "entry_a" ]] && is_enabled "$ENABLE_ANYTLS"; then firewall-cmd --permanent --add-port="${ANYTLS_PORT}/tcp"; opened=1; fi
-      if [[ "$PM_NODE_ROLE" == "entry_a" ]] && is_enabled "$ENABLE_NAIVE"; then firewall-cmd --permanent --add-port="${NAIVE_PORT}/tcp"; firewall-cmd --permanent --add-port="${NAIVE_PORT}/udp"; opened=1; fi
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then firewall-cmd --permanent --add-port="${SS_PORT}/tcp"; firewall-cmd --permanent --add-port="${SS_PORT}/udp"; opened=1; fi
+      if is_enabled "$ENABLE_ANYTLS"; then firewall-cmd --permanent --add-port="${ANYTLS_PORT}/tcp"; opened=1; fi
+      if is_enabled "$ENABLE_NAIVE"; then firewall-cmd --permanent --add-port="${NAIVE_PORT}/tcp"; firewall-cmd --permanent --add-port="${NAIVE_PORT}/udp"; opened=1; fi
+      if is_enabled "$ENABLE_SS_ENTRY"; then firewall-cmd --permanent --add-port="${SS_PORT}/tcp"; firewall-cmd --permanent --add-port="${SS_PORT}/udp"; opened=1; fi
+      if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then firewall-cmd --permanent --add-port="${B_SS_PORT}/tcp"; firewall-cmd --permanent --add-port="${B_SS_PORT}/udp"; opened=1; fi
       firewall-cmd --reload
     fi
   fi
   if [[ "$opened" -eq 1 ]]; then
     log "已尝试放行当前启用组件端口。云厂商安全组如存在，仍需在面板放行。"
-    if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then warn "服务器 B 的 Shadowsocks 端口建议仅允许服务器 A 的公网 IP 访问。"; fi
+    if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then warn "服务器 B 的 Shadowsocks 落地端口 ${B_SS_PORT} 建议仅允许服务器 A 的公网 IP 访问；用户入口端口需对用户开放。"; fi
   else
     warn "未检测到受支持的本机防火墙或未放行端口；如外网不通，请检查 UFW/安全组/宝塔防火墙。"
   fi
@@ -1430,13 +1509,11 @@ Proxy Lite v$VERSION
 出站策略：$(egress_summary)
 模式：单实例协议级出站控制；无多用户、无流量限额、无域名/IP 分流规则
 EOF
-  if [[ "$PM_NODE_ROLE" == "entry_a" ]]; then
-    if is_enabled "$ENABLE_ANYTLS"; then printf 'AnyTLS：端口 %s，用户名 %s，密码 %s，出站 %s\n' "$ANYTLS_PORT" "$ANYTLS_NAME" "$(mask_secret "$ANYTLS_PASSWORD")" "$ANYTLS_EGRESS"; fi
-    if is_enabled "$ENABLE_NAIVE"; then printf 'NaiveProxy：端口 %s，用户名 %s，密码 %s，出站 %s\n' "$NAIVE_PORT" "$NAIVE_USERNAME" "$(mask_secret "$NAIVE_PASSWORD")" "$NAIVE_EGRESS"; fi
-    if needs_egress_b; then printf 'A-B Shadowsocks 上游：%s:%s，method %s，密码 %s\n' "$B_SS_HOST" "$B_SS_PORT" "$B_SS_METHOD" "$(mask_secret "$B_SS_PASSWORD")"; fi
-  else
-    printf 'B Shadowsocks landing：端口 %s，method %s，密码 %s\n' "${B_SS_PORT:-$SS_PORT}" "${B_SS_METHOD:-$SS_METHOD}" "$(mask_secret "$B_SS_PASSWORD")"
-  fi
+  if is_enabled "$ENABLE_ANYTLS"; then printf 'AnyTLS：端口 %s，用户名 %s，密码 %s，出站 %s\n' "$ANYTLS_PORT" "$ANYTLS_NAME" "$(mask_secret "$ANYTLS_PASSWORD")" "$ANYTLS_EGRESS"; fi
+  if is_enabled "$ENABLE_NAIVE"; then printf 'NaiveProxy：端口 %s，用户名 %s，密码 %s，出站 %s\n' "$NAIVE_PORT" "$NAIVE_USERNAME" "$(mask_secret "$NAIVE_PASSWORD")" "$NAIVE_EGRESS"; fi
+  if is_enabled "$ENABLE_SS_ENTRY"; then printf 'Shadowsocks 入口：端口 %s，method %s，密码 %s，出站 %s\n' "$SS_PORT" "$SS_METHOD" "$(mask_secret "$SS_PASSWORD")" "$SS_EGRESS"; fi
+  if [[ "$PM_NODE_ROLE" == "entry_a" ]] && needs_egress_b; then printf 'A-B Shadowsocks 上游：%s:%s，method %s，密码 %s\n' "$B_SS_HOST" "$B_SS_PORT" "$B_SS_METHOD" "$(mask_secret "$B_SS_PASSWORD")"; fi
+  if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then printf 'B Shadowsocks landing：端口 %s，method %s，密码 %s\n' "$B_SS_PORT" "$B_SS_METHOD" "$(mask_secret "$B_SS_PASSWORD")"; fi
   printf '客户端配置目录：%s\n' "$(CLIENT_DIR)"
 }
 
@@ -1468,9 +1545,10 @@ change_port_usage() {
 用法：
   PL change-port anytls PORT
   PL change-port naive PORT
+  PL change-port ss PORT
   PL change-port b-ss PORT
 
-说明：entry_a 不提供 Shadowsocks 用户入口；b-ss 仅表示 A-B 内部链路或 B 的 landing 端口。
+说明：anytls/naive/ss 为用户入口端口；b-ss 为 A-B 内部落地端口（egress_b 上即 B 的 landing 监听端口）。
 EOF
 }
 
@@ -1482,21 +1560,17 @@ change_port() {
   backup_configs
   case "$target" in
     anytls)
-      [[ "$PM_NODE_ROLE" == "entry_a" && $(parse_bool01 "$ENABLE_ANYTLS") == "1" ]] || die "当前节点未启用 AnyTLS 用户入口。"
+      [[ $(parse_bool01 "$ENABLE_ANYTLS") == "1" ]] || die "当前节点未启用 AnyTLS 用户入口。"
       ANYTLS_PORT="$port" ;;
     naive)
-      [[ "$PM_NODE_ROLE" == "entry_a" && $(parse_bool01 "$ENABLE_NAIVE") == "1" ]] || die "当前节点未启用 NaiveProxy 用户入口。"
+      [[ $(parse_bool01 "$ENABLE_NAIVE") == "1" ]] || die "当前节点未启用 NaiveProxy 用户入口。"
       NAIVE_PORT="$port" ;;
     ss)
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-        warn "ss 是旧版兼容别名，建议使用：PL change-port b-ss PORT"
-        SS_PORT="$port"; B_SS_PORT="$port"
-      else
-        die "proxy-lite 不提供 Shadowsocks 用户入口；Shadowsocks 仅用于 A-B 中间链路，请使用 b-ss。"
-      fi ;;
+      [[ $(parse_bool01 "$ENABLE_SS_ENTRY") == "1" ]] || die "当前节点未启用 Shadowsocks 用户入口。"
+      SS_PORT="$port" ;;
     b-ss)
       B_SS_PORT="$port"
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then SS_PORT="$port"; elif ! needs_egress_b; then warn "当前 entry_a 没有协议选择 egress-b，已仅保存 A-B 端口设置。"; fi ;;
+      if [[ "$PM_NODE_ROLE" != "egress_b" ]] && ! needs_egress_b; then warn "当前 entry_a 没有协议选择 egress-b，已仅保存 A-B 端口设置。"; fi ;;
     *) err "未知端口目标：$target"; change_port_usage; exit 2 ;;
   esac
   render_all
@@ -1508,10 +1582,11 @@ change_secret_usage() {
 用法：
   PL change-secret anytls [PASSWORD]
   PL change-secret naive [PASSWORD]
+  PL change-secret ss [PASSWORD]
   PL change-secret b-ss [PASSWORD]
   PL change-secret all
 
-说明：entry_a 不提供 Shadowsocks 用户入口；b-ss 是 A-B 内部链路密码，修改后需同步另一端。
+说明：anytls/naive/ss 为用户入口密码；b-ss 是 A-B 内部落地密码，修改后需同步另一端。all 只轮换本机用户入口，不自动改 b-ss。
 EOF
 }
 
@@ -1522,32 +1597,25 @@ change_secret() {
   backup_configs
   case "$target" in
     anytls)
-      [[ "$PM_NODE_ROLE" == "entry_a" && $(parse_bool01 "$ENABLE_ANYTLS") == "1" ]] || die "当前节点未启用 AnyTLS 用户入口。"
+      [[ $(parse_bool01 "$ENABLE_ANYTLS") == "1" ]] || die "当前节点未启用 AnyTLS 用户入口。"
       ANYTLS_PASSWORD="${value:-$(random_hex)}" ;;
     naive)
-      [[ "$PM_NODE_ROLE" == "entry_a" && $(parse_bool01 "$ENABLE_NAIVE") == "1" ]] || die "当前节点未启用 NaiveProxy 用户入口。"
+      [[ $(parse_bool01 "$ENABLE_NAIVE") == "1" ]] || die "当前节点未启用 NaiveProxy 用户入口。"
       NAIVE_PASSWORD="${value:-$(random_hex)}" ;;
     ss)
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-        warn "ss 是旧版兼容别名，建议使用：PL change-secret b-ss [PASSWORD]"
-        SS_PASSWORD="${value:-$(random_hex)}"; B_SS_PASSWORD="$SS_PASSWORD"
-      else
-        die "proxy-lite 不提供 Shadowsocks 用户入口；Shadowsocks 仅用于 A-B 中间链路，请使用 b-ss。"
-      fi ;;
+      [[ $(parse_bool01 "$ENABLE_SS_ENTRY") == "1" ]] || die "当前节点未启用 Shadowsocks 用户入口。"
+      SS_PASSWORD="${value:-$(random_hex)}" ;;
     b-ss)
       B_SS_PASSWORD="${value:-$(random_hex)}"
-      if [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
-        SS_PASSWORD="$B_SS_PASSWORD"
-      else
+      if [[ "$PM_NODE_ROLE" != "egress_b" ]]; then
         warn "已修改 A-B 内部链路密码；请同步更新服务器 B 的 b-ss 密码，否则经 B 的协议会中断。"
       fi ;;
     all)
-      if [[ "$PM_NODE_ROLE" == "entry_a" ]]; then
-        if is_enabled "$ENABLE_ANYTLS"; then ANYTLS_PASSWORD="$(random_hex)"; fi
-        if is_enabled "$ENABLE_NAIVE"; then NAIVE_PASSWORD="$(random_hex)"; fi
-      else
-        SS_PASSWORD="$(random_hex)"
-        B_SS_PASSWORD="$SS_PASSWORD"
+      if is_enabled "$ENABLE_ANYTLS"; then ANYTLS_PASSWORD="$(random_hex)"; fi
+      if is_enabled "$ENABLE_NAIVE"; then NAIVE_PASSWORD="$(random_hex)"; fi
+      if is_enabled "$ENABLE_SS_ENTRY"; then SS_PASSWORD="$(random_hex)"; fi
+      if [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then
+        warn "已轮换用户入口；A-B 内部落地 b-ss 未自动轮换，避免两端不一致。"
       fi
       ;;
     *) err "未知密码目标：$target"; change_secret_usage; exit 2 ;;
@@ -1559,16 +1627,10 @@ change_secret() {
 regen_all() {
   load_env_required
   backup_configs
-  if [[ "$PM_NODE_ROLE" == "entry_a" ]]; then
-    if is_enabled "$ENABLE_ANYTLS"; then ANYTLS_PORT="$(random_free_port)"; ANYTLS_PASSWORD="$(random_hex)"; fi
-    if is_enabled "$ENABLE_NAIVE"; then NAIVE_PORT="$(random_free_port)"; NAIVE_PASSWORD="$(random_hex)"; fi
-    warn "已重新生成用户入口端口和密码；A-B 内部链路 b-ss 未自动轮换，避免两端不一致。"
-  else
-    SS_PORT="$(random_free_port)"
-    SS_PASSWORD="$(random_hex)"
-    B_SS_PORT="$SS_PORT"
-    B_SS_PASSWORD="$SS_PASSWORD"
-  fi
+  if is_enabled "$ENABLE_ANYTLS"; then ANYTLS_PORT="$(random_free_port)"; ANYTLS_PASSWORD="$(random_hex)"; fi
+  if is_enabled "$ENABLE_NAIVE"; then NAIVE_PORT="$(random_free_port)"; NAIVE_PASSWORD="$(random_hex)"; fi
+  if is_enabled "$ENABLE_SS_ENTRY"; then SS_PORT="$(random_free_port)"; SS_PASSWORD="$(random_hex)"; fi
+  warn "已重新生成用户入口端口和密码；A-B 内部链路 b-ss 未自动轮换，避免两端不一致。"
   render_all
   apply_runtime_if_running
 }
@@ -1598,13 +1660,13 @@ topology_show() {
   load_env_required
   cat <<EOF
 角色：$(role_label)
-行为：entry_a 按用户入口协议选择 direct 或 egress-b；egress_b 提供 Shadowsocks landing 并 direct 落地。
+行为：用户入口协议可按 direct 或 egress-b 出站；egress_b 额外提供 Shadowsocks 内部落地并 direct 落地。
 用户入口/服务：$(component_summary)
 出站策略：$(egress_summary)
 EOF
   if [[ "$PM_NODE_ROLE" == "entry_a" ]] && needs_egress_b; then
     printf 'B Shadowsocks 上游：%s:%s\n' "$B_SS_HOST" "$B_SS_PORT"
-  elif [[ "$PM_NODE_ROLE" == "egress_b" ]]; then
+  elif [[ "$PM_NODE_ROLE" == "egress_b" ]] && is_enabled "$ENABLE_SS"; then
     printf 'B Shadowsocks landing：本机:%s\n' "$B_SS_PORT"
   fi
 }
@@ -1722,8 +1784,8 @@ Proxy Lite v$VERSION
 已裁剪功能：user、route、stats、traffic、quota。
 
 角色：
-  entry_a          服务器 A：AnyTLS/NaiveProxy 用户入口，按协议选择 direct 或 egress-b
-  egress_b         服务器 B：A-B 内部 Shadowsocks 落地出口
+  entry_a          服务器 A：AnyTLS/NaiveProxy/Shadowsocks 用户入口，按协议选择 direct 或 egress-b
+  egress_b         服务器 B：可直接提供 AnyTLS/NaiveProxy/Shadowsocks 用户入口，并提供 A-B 内部 Shadowsocks 落地
 
 install 可选参数：
   --yes
@@ -1732,25 +1794,31 @@ install 可选参数：
   --server-ip IP
   --image IMAGE
   --node-role entry_a|egress_b
-  --components anytls|naive|anytls,naive|all
+  --components anytls|naive|ss|anytls,naive,ss|all（egress_b 可留空仅作落地）
   --anytls-egress direct|egress-b
   --naive-egress direct|egress-b
+  --ss-egress direct|egress-b
   --cert-file PATH
   --key-file PATH
   --anytls-port PORT
   --naive-port PORT
+  --ss-port PORT
+  --ss-method METHOD
   --b-ss-host HOST
   --b-ss-port PORT
   --b-ss-method METHOD
   --b-ss-password PASSWORD
 
-说明：entry_a 不提供 Shadowsocks 用户入口；Shadowsocks 只用于 A-B 内部链路。
+说明：anytls/naive/ss 为用户入口；b-ss 为 A-B 内部 Shadowsocks 落地，凭据不进入用户客户端导出。
 
-服务器 B 示例：
+服务器 B 仅落地示例：
   PL install --yes --node-role egress_b --domain b.example.com --server-ip 198.51.100.20 --b-ss-port 30003 --b-ss-password '<B_SS_PASSWORD>'
 
-服务器 A 混合出站示例：
-  PL install --yes --node-role entry_a --domain a.example.com --server-ip 203.0.113.10 --components anytls,naive --anytls-egress direct --naive-egress egress-b --cert-file /path/fullchain.pem --key-file /path/privkey.pem --anytls-port 30001 --naive-port 30002 --b-ss-host 198.51.100.20 --b-ss-port 30003 --b-ss-password '<B_SS_PASSWORD>'
+服务器 B 落地 + 直接提供 Shadowsocks 入口示例：
+  PL install --yes --node-role egress_b --domain b.example.com --server-ip 198.51.100.20 --b-ss-port 30003 --b-ss-password '<B_SS_PASSWORD>' --components ss --ss-port 30004 --ss-password '<USER_SS_PASSWORD>'
+
+服务器 A 混合出站示例（AnyTLS direct、NaiveProxy 经 B、Shadowsocks direct）：
+  PL install --yes --node-role entry_a --domain a.example.com --server-ip 203.0.113.10 --components anytls,naive,ss --anytls-egress direct --naive-egress egress-b --ss-egress direct --cert-file /path/fullchain.pem --key-file /path/privkey.pem --anytls-port 30001 --naive-port 30002 --ss-port 30004 --ss-password '<USER_SS_PASSWORD>' --b-ss-host 198.51.100.20 --b-ss-port 30003 --b-ss-password '<B_SS_PASSWORD>'
 
 GitHub 下载安装（root 用户下）：
   curl -fsSL $RELEASE_SCRIPT_URL -o /tmp/proxy-lite.sh
